@@ -600,24 +600,27 @@
 				></canvas>
 
 				{#if mode !== 'title'}
-					<div
-						class="heart-hud"
-						aria-label={`Health ${Math.ceil(health)} of ${Math.ceil(maxHealth)}`}
-					>
-						<span>♥</span>
-						<div>
-							<b>HEALTH</b><i
-								><em style={`width:${Math.min(100, (health / Math.max(1, maxHealth)) * 100)}%`}
-								></em></i
-							>
+					<div class="player-hud">
+						<div
+							class="heart-hud"
+							aria-label={`Health ${Math.ceil(health)} of ${Math.ceil(maxHealth)}`}
+						>
+							<div>
+								<b>VITALS</b><i
+									><em style={`width:${Math.min(100, (health / Math.max(1, maxHealth)) * 100)}%`}
+									></em></i
+								>
+							</div>
+							<strong>{Math.ceil(health)}</strong>
 						</div>
-					</div>
-					<div class="score-card">
-						<span>SKULLS</span><strong>{score}</strong><small>REACH {Math.round(reach)}</small>
-					</div>
-					<div class="power-card">
-						<span>{isAiming ? '⚡ ALL POWER' : '⚡ POWER'}</span><strong>{Math.floor(power)}</strong
-						><i><em style={`width:${Math.min(100, (power / 120) * 100)}%`}></em></i>
+						<div class="score-card">
+							<span>SCORE</span><strong>{score}</strong><small>RANGE {Math.round(reach)}</small>
+						</div>
+						<div class="power-card">
+							<span>{isAiming ? 'ARMED · ALL IN' : 'POWER RESERVE'}</span><strong
+								>{Math.floor(power)}</strong
+							><i><em style={`width:${Math.min(100, (power / 120) * 100)}%`}></em></i>
+						</div>
 					</div>
 				{/if}
 				{#if isAiming}
@@ -858,32 +861,47 @@
 	.aiming canvas {
 		cursor: none;
 	}
+	.player-hud {
+		position: absolute;
+		z-index: 4;
+		left: 50%;
+		top: 14px;
+		transform: translateX(-50%);
+		display: grid;
+		grid-template-columns: 1fr auto 1fr;
+		align-items: stretch;
+		width: min(540px, calc(100% - 28px));
+		min-height: 58px;
+		color: #dffcff;
+		background: rgba(7, 18, 27, 0.9);
+		border: 2px solid #315a61;
+		border-top-color: #64dce5;
+		box-shadow:
+			0 6px 0 rgba(6, 9, 15, 0.75),
+			inset 0 0 0 2px rgba(100, 220, 229, 0.08);
+		backdrop-filter: blur(4px);
+	}
 	.heart-hud,
 	.score-card,
 	.power-card {
-		position: absolute;
-		z-index: 4;
-		background: #4b2f3d;
-		border: 4px solid #271b29;
-		box-shadow: 4px 4px 0 #120e17;
-		color: #fff5d6;
+		position: relative;
+		background: transparent;
+		border: 0;
+		box-shadow: none;
+		color: inherit;
 	}
 	.heart-hud {
-		top: 14px;
-		left: 14px;
 		display: flex;
 		align-items: center;
-		gap: 9px;
-		padding: 7px 10px;
-		width: 168px;
-	}
-	.heart-hud > span {
-		color: #ff665f;
-		font: 900 31px monospace;
-		text-shadow: 3px 3px #8a2c48;
+		gap: 12px;
+		padding: 9px 14px;
 	}
 	.heart-hud div {
 		flex: 1;
+	}
+	.heart-hud strong {
+		color: #ff7a76;
+		font: 1000 18px monospace;
 	}
 	.heart-hud b,
 	.power-card span,
@@ -895,10 +913,10 @@
 	.heart-hud i,
 	.power-card i {
 		display: block;
-		height: 7px;
+		height: 5px;
 		margin-top: 5px;
-		background: #211923;
-		border: 2px solid #1a141d;
+		background: #182833;
+		border: 1px solid #31505a;
 	}
 	.heart-hud em,
 	.power-card em {
@@ -907,30 +925,28 @@
 		background: #ff665f;
 	}
 	.score-card {
-		top: 14px;
-		right: 14px;
 		display: grid;
 		grid-template-columns: auto auto;
 		align-items: center;
-		gap: 0 10px;
-		padding: 8px 10px;
+		gap: 0 12px;
+		padding: 8px 18px;
+		border-right: 2px solid #31505a;
+		border-left: 2px solid #31505a;
 	}
 	.score-card strong {
 		grid-row: 1 / 3;
 		grid-column: 2;
 		color: #ffe36e;
 		font: 1000 25px monospace;
-		text-shadow: 2px 2px #583244;
+		text-shadow: 2px 2px #3b3424;
 	}
 	.score-card small {
 		font: 700 7px monospace;
 		color: #c7b39f;
 	}
 	.power-card {
-		left: 14px;
-		bottom: 14px;
-		width: 154px;
-		padding: 8px 10px;
+		width: auto;
+		padding: 9px 14px;
 	}
 	.power-card strong {
 		position: absolute;
@@ -946,7 +962,7 @@
 		position: absolute;
 		z-index: 5;
 		left: 50%;
-		bottom: 18px;
+		bottom: 88px;
 		transform: translateX(-50%);
 		display: grid;
 		grid-template-columns: auto auto;
@@ -960,7 +976,8 @@
 		position: absolute;
 		z-index: 5;
 		left: 50%;
-		top: 62px;
+		top: auto;
+		bottom: 88px;
 		transform: translateX(-50%);
 		padding: 7px 10px;
 		color: #fff0ad;
@@ -1280,8 +1297,17 @@
 		.title-actions {
 			flex-direction: column;
 		}
-		.heart-hud {
-			width: 140px;
+		.player-hud {
+			top: 8px;
+			width: calc(100% - 16px);
+			grid-template-columns: 1fr auto 1fr;
+		}
+		.heart-hud,
+		.power-card {
+			padding-inline: 8px;
+		}
+		.score-card {
+			padding-inline: 10px;
 		}
 		.tutorial-card {
 			top: 75px;

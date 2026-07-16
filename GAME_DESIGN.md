@@ -92,9 +92,10 @@ player can attack or parry and when a recent attacker is defenseless.
 
 ### Board
 
-The arena contains monsters with at least a color and position. The exact board
-topology is undecided; both a discrete grid and a spatial graph can support the
-design.
+The arena places monsters on a square grid. Chains move only between the four
+orthogonal neighbors of a cell; diagonals are not chain connections. Player
+movement, aiming, and projectile motion remain continuous and are not snapped
+to this grid.
 
 ### Building a chain
 
@@ -410,7 +411,7 @@ The first playable is successful if it answers these questions:
 These should be resolved through the implementation plan or early prototypes:
 
 - Engine/platform and networking stack
-- Discrete grid versus freeform spatial board
+- Square-grid density and spacing
 - Exact movement model and camera perspective
 - Exact Score-versus-Power commit controls
 - Chain scoring curve and combo bonuses

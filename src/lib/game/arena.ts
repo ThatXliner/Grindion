@@ -25,19 +25,13 @@ export function createArena(
 	for (let index = 0; index < config.monsterCount; index++) {
 		const row = Math.floor(index / columns),
 			col = index % columns;
-		let random = randomFrom(randomState);
-		randomState = random.state;
-		const jitterX = (random.value - 0.5) * dx * 0.22;
-		random = randomFrom(randomState);
-		randomState = random.state;
-		const jitterY = (random.value - 0.5) * dy * 0.22;
-		random = randomFrom(randomState);
+		const random = randomFrom(randomState);
 		randomState = random.state;
 		monsters[`m${index}`] = {
 			id: `m${index}`,
 			position: {
-				x: marginX + col * dx + (row % 2 ? dx * 0.35 : 0) + jitterX,
-				y: marginY + row * dy + jitterY
+				x: marginX + col * dx,
+				y: marginY + row * dy
 			},
 			color: COLORS[Math.floor(random.value * COLORS.length)]!,
 			neighborIds: [],
@@ -45,14 +39,16 @@ export function createArena(
 			respawnAtMs: 0
 		};
 	}
-	const all = Object.values(monsters);
-	const threshold = Math.hypot(dx, dy) * 1.22;
-	for (let a = 0; a < all.length; a++)
-		for (let b = a + 1; b < all.length; b++) {
-			if (distance(all[a]!.position, all[b]!.position) <= threshold) {
-				all[a]!.neighborIds.push(all[b]!.id);
-				all[b]!.neighborIds.push(all[a]!.id);
-			}
-		}
+	for (let index = 0; index < config.monsterCount; index++) {
+		const row = Math.floor(index / columns);
+		const col = index % columns;
+		const neighbors = [
+			row > 0 ? index - columns : -1,
+			col > 0 ? index - 1 : -1,
+			col < columns - 1 ? index + 1 : -1,
+			row < rows - 1 ? index + columns : -1
+		].filter((neighbor) => neighbor >= 0 && neighbor < config.monsterCount);
+		monsters[`m${index}`]!.neighborIds = neighbors.map((neighbor) => `m${neighbor}`);
+	}
 	return { arena: { width: config.width, height: config.height, monsters }, randomState };
 }

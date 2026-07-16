@@ -29,6 +29,20 @@ describe('game engine', () => {
 		expect(createGame({ seed: 42 }).arena).not.toEqual(createGame({ seed: 43 }).arena);
 	});
 
+	it('uses a square grid with orthogonal chain neighbors only', () => {
+		const state = createGame({ seed: 42 });
+		const columns = state.config.monsterColumns;
+		for (const monster of Object.values(state.arena.monsters)) {
+			const index = Number(monster.id.slice(1));
+			for (const neighborId of monster.neighborIds) {
+				const neighbor = Number(neighborId.slice(1));
+				const rowDistance = Math.abs(Math.floor(index / columns) - Math.floor(neighbor / columns));
+				const columnDistance = Math.abs((index % columns) - (neighbor % columns));
+				expect(rowDistance + columnDistance).toBe(1);
+			}
+		}
+	});
+
 	it('uses logarithmic growth and power handicap', () => {
 		expect(reachForScore(100)).toBeGreaterThan(reachForScore(0));
 		expect(maxHealthForScore(1000) - maxHealthForScore(100)).toBeLessThan(
@@ -90,6 +104,19 @@ describe('game engine', () => {
 		expect(result.state.players.a!.power).toBe(0);
 		expect(result.state.players.b!.health).toBe(result.state.players.b!.maxHealth);
 		expect(result.events.some((event) => event.type === 'projectile-parried')).toBe(true);
+	});
+
+	it('fires projectiles at arbitrary angles independent of the grid', () => {
+		const state = createGame({ players: [{ id: 'a' }] });
+		state.players.a!.power = 40;
+		const result = stepGame(
+			state,
+			[{ type: 'fire', playerId: 'a', direction: { x: 1, y: 1 } }],
+			50
+		);
+		const projectile = Object.values(result.state.projectiles)[0]!;
+		expect(projectile.velocity.x).toBeCloseTo(state.config.projectileSpeed / Math.sqrt(2));
+		expect(projectile.velocity.y).toBeCloseTo(state.config.projectileSpeed / Math.sqrt(2));
 	});
 
 	it('damages, kills, loses score, and respawns with protection', () => {
