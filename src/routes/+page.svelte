@@ -39,16 +39,22 @@
 	const TUTORIAL_STEPS = [
 		{
 			title: 'Choose a route',
-			copy: 'Press and hold on your hero—not a monster—then drag into the cyan-outlined coral.'
+			copy: 'Drag from your hero into the cyan-outlined coral, or play the route entirely on Numpad: 9 → 6 → 2.',
+			mobileCopy:
+				'Press and hold on your hero—not a monster—then drag into the cyan-outlined coral.'
 		},
-		{ title: 'Move + bank', copy: 'Release to claim Score and land on the final creature.' },
+		{
+			title: 'Move + bank',
+			copy: 'Release—or press Numpad 5 / Enter—to claim Score and land on the final creature.',
+			mobileCopy: 'Release to claim Score and land on the final creature.'
+		},
 		{
 			title: 'Read your reach',
 			copy: 'The dashed ring is your reach. Banking Score expands it and max health logarithmically: early points help most.'
 		},
 		{
 			title: 'Charge Power',
-			copy: 'Build another chain. Hold Shift as you release to convert it to Power.',
+			copy: 'Build another chain. Hold Shift as you release, or press Numpad +, to convert it to Power.',
 			mobileCopy: 'Power mode is selected below. Build another chain and release to convert it.'
 		},
 		{
@@ -94,6 +100,16 @@
 	const AIM_VIEW_WIDTH = 680;
 	const MOBILE_VIEW_WIDTH = 460;
 	const MOBILE_AIM_VIEW_WIDTH = 590;
+	const NUMPAD_DIRECTIONS: Record<string, Point> = {
+		Numpad7: { x: -1, y: -1 },
+		Numpad8: { x: 0, y: -1 },
+		Numpad9: { x: 1, y: -1 },
+		Numpad4: { x: -1, y: 0 },
+		Numpad6: { x: 1, y: 0 },
+		Numpad1: { x: -1, y: 1 },
+		Numpad2: { x: 0, y: 1 },
+		Numpad3: { x: 1, y: 1 }
+	};
 	const chainAnimations = new SvelteMap<string, ChainAnimation>();
 	let camera = { x: 720, y: 450, viewWidth: NORMAL_VIEW_WIDTH };
 	let spriteSheet: HTMLImageElement | null = null;
@@ -416,6 +432,19 @@
 			);
 	}
 
+	function selectChainTarget(monster: Monster) {
+		if (!isLegalChainTarget(monster)) return false;
+		const intentType = optimisticChainIds.length ? 'chain-extend' : 'chain-start';
+		const existingIndex = optimisticChainIds.indexOf(monster.id);
+		optimisticChainIds =
+			existingIndex >= 0
+				? optimisticChainIds.slice(0, existingIndex + 1)
+				: [...optimisticChainIds, monster.id];
+		latestChainMonster = monster.id;
+		dispatch({ type: intentType, monsterId: monster.id });
+		return true;
+	}
+
 	function onPointerDown(event: PointerEvent) {
 		if (mode === 'title' || isDead || chainAnimations.has(humanId)) return;
 		canvas.setPointerCapture(event.pointerId);
@@ -452,15 +481,7 @@
 		if (!isDragging) return;
 		const start = previousDragPoint ?? pointerWorld;
 		for (const { monster } of chainTargetsAlong(start, pointerWorld)) {
-			if (!isLegalChainTarget(monster)) continue;
-			const intentType = optimisticChainIds.length ? 'chain-extend' : 'chain-start';
-			const existingIndex = optimisticChainIds.indexOf(monster.id);
-			optimisticChainIds =
-				existingIndex >= 0
-					? optimisticChainIds.slice(0, existingIndex + 1)
-					: [...optimisticChainIds, monster.id];
-			latestChainMonster = monster.id;
-			dispatch({ type: intentType, monsterId: monster.id });
+			selectChainTarget(monster);
 		}
 		previousDragPoint = pointerWorld;
 	}
@@ -505,8 +526,68 @@
 		if (mobileAimArmed) pointerWorld = { x: me.position.x + 120, y: me.position.y };
 	}
 
+	function selectNumpadDirection(direction: Point) {
+		if (!game || !me || mode === 'title' || isDead || isAiming || chainAnimations.has(humanId))
+			return;
+		if (!optimisticChainIds.length && me.chain.length) optimisticChainIds = [...me.chain];
+		const sourceId = optimisticChainIds.at(-1) ?? me.cellId;
+		const source = game.arena.monsters[sourceId];
+		if (!source) return;
+		const target = source.neighborIds
+			.map((id) => game?.arena.monsters[id])
+			.find(
+				(monster) =>
+					monster &&
+					Math.sign(monster.position.x - source.position.x) === direction.x &&
+					Math.sign(monster.position.y - source.position.y) === direction.y
+			);
+		if (target) selectChainTarget(target);
+	}
+
+	function resetOptimisticChain() {
+		optimisticChainIds = [];
+		latestChainMonster = '';
+		previousDragPoint = null;
+	}
+
+	function commitNumpadChain(conversion: 'score' | 'power') {
+		if (!optimisticChainIds.length && !me?.chain.length) return;
+		dispatch({ type: 'chain-commit', conversion });
+		resetOptimisticChain();
+	}
+
+	function cancelActiveChain() {
+		dispatch({ type: 'chain-cancel' });
+		resetOptimisticChain();
+	}
+
 	function onKeyDown(event: KeyboardEvent) {
+		const direction = NUMPAD_DIRECTIONS[event.code];
+		if (direction) {
+			event.preventDefault();
+			selectNumpadDirection(direction);
+			return;
+		}
 		if (event.repeat) return;
+		if (event.code === 'Numpad5' || event.code === 'NumpadEnter') {
+			event.preventDefault();
+			commitNumpadChain('score');
+			return;
+		}
+		if (event.code === 'NumpadAdd') {
+			event.preventDefault();
+			commitNumpadChain('power');
+			return;
+		}
+		if (
+			event.code === 'Numpad0' ||
+			event.code === 'NumpadDecimal' ||
+			event.code === 'NumpadSubtract'
+		) {
+			event.preventDefault();
+			cancelActiveChain();
+			return;
+		}
 		if (event.code === 'Space') {
 			event.preventDefault();
 			dispatch({ type: 'parry' });
@@ -514,7 +595,7 @@
 		if (event.key === 'Escape') {
 			isDragging = false;
 			isAiming = false;
-			dispatch({ type: 'chain-cancel' });
+			cancelActiveChain();
 		}
 	}
 
@@ -1156,6 +1237,9 @@
 					><span><kbd>DRAG BACK</kbd> SHORTEN ROUTE</span><span
 						><kbd>HOLD RMB</kbd> AIM / SCOUT</span
 					><span><kbd>RELEASE RMB</kbd> FIRE ALL</span><span><kbd>SPACE</kbd> PARRY</span>
+					<span><kbd>NUM 7–9 / 4·6 / 1–3</kbd> KEYBOARD ROUTE</span><span
+						><kbd>NUM 5 / ENTER</kbd> SCORE</span
+					><span><kbd>NUM +</kbd> POWER</span><span><kbd>NUM 0</kbd> CANCEL</span>
 				</div>
 			{/if}
 		</div>
