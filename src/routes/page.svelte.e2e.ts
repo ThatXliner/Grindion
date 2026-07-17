@@ -107,6 +107,36 @@ test('supports chaining, revising, and banking entirely from the numpad', async 
 	await expect(page.locator('.score-card strong')).toHaveText('3');
 });
 
+test('right-dragging from the hero stores a chain as Power', async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await page.goto('/');
+	await page.getByRole('button', { name: 'PLAY TUTORIAL ▶' }).click();
+
+	const canvas = page.locator('canvas');
+	const box = await canvas.boundingBox();
+	expect(box).not.toBeNull();
+	if (!box) return;
+	const worldToScreen = (x: number, y: number) => ({
+		x: box.x + box.width / 2 + ((x - 720) * box.width) / 570,
+		y: box.y + box.height / 2 + ((y - 551.25) * box.width) / 570
+	});
+	const hero = worldToScreen(720, 551.25);
+	const route = [
+		worldToScreen(787.5, 483.75),
+		worldToScreen(855, 483.75),
+		worldToScreen(855, 551.25)
+	];
+
+	await page.mouse.move(hero.x, hero.y);
+	await page.mouse.down({ button: 'right' });
+	for (const point of route) await page.mouse.move(point.x, point.y, { steps: 4 });
+	await expect(page.locator('.chain-status')).toContainText('STORE POWER');
+	await page.mouse.up({ button: 'right' });
+
+	await expect(page.getByText('CHAIN → POWER')).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Choose a route' })).toBeVisible();
+});
+
 test('provides complete touch controls on a phone viewport', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.goto('/');

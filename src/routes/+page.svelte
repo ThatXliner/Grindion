@@ -54,7 +54,7 @@
 		},
 		{
 			title: 'Charge Power',
-			copy: 'Build another chain. Hold Shift as you release, or press Numpad +, to convert it to Power.',
+			copy: 'Right-drag from your hero through another chain, or press Numpad +, to store it as Power.',
 			mobileCopy: 'Power mode is selected below. Build another chain and release to convert it.'
 		},
 		{
@@ -79,6 +79,8 @@
 	let mode = $state<GameMode>('title');
 	let isRunning = $state(false);
 	let isDragging = $state(false);
+	let dragConversion = $state<'score' | 'power'>('score');
+	let dragButton = 0;
 	let isAiming = $state(false);
 	let pointerOverPlayer = $state(false);
 	let hasCommittedChain = $state(false);
@@ -243,6 +245,8 @@
 		eventFeed = [];
 		isRunning = true;
 		isDragging = false;
+		dragButton = 0;
+		dragConversion = 'score';
 		isAiming = false;
 		pointerOverPlayer = false;
 		hasCommittedChain = false;
@@ -330,6 +334,15 @@
 		) {
 			tutorialRouteIds = [];
 			tutorialStep = 2;
+		} else if (
+			tutorialStep === 1 &&
+			event.type === 'chain-committed' &&
+			event.playerId === humanId &&
+			event.conversion === 'power' &&
+			game
+		) {
+			stageTutorialRoute(game, 'coral');
+			tutorialStep = 0;
 		} else if (
 			tutorialStep === 3 &&
 			event.type === 'chain-committed' &&
@@ -449,23 +462,26 @@
 		if (mode === 'title' || isDead || chainAnimations.has(humanId)) return;
 		canvas.setPointerCapture(event.pointerId);
 		pointerWorld = canvasPoint(event);
-		if (event.button === 2 || (useTouchControls && mobileAimArmed && event.button === 0)) {
-			event.preventDefault();
-			isAiming = true;
-			return;
-		}
-		if (event.button !== 0) return;
 		if (!me) return;
 		const distanceFromPlayer = Math.hypot(
 			pointerWorld.x - me.position.x,
 			pointerWorld.y - me.position.y
 		);
-		if (
-			distanceFromPlayer >
-			Math.max(useTouchControls ? 52 : 38, (game?.config.playerRadius ?? 18) * 2)
-		)
+		const startsOnPlayer =
+			distanceFromPlayer <=
+			Math.max(useTouchControls ? 52 : 38, (game?.config.playerRadius ?? 18) * 2);
+		const mobileShot = useTouchControls && mobileAimArmed && event.button === 0;
+		if (mobileShot || (event.button === 2 && !startsOnPlayer)) {
+			event.preventDefault();
+			isAiming = true;
 			return;
+		}
+		if ((event.button !== 0 && event.button !== 2) || !startsOnPlayer) return;
+		if (event.button === 2) event.preventDefault();
 		isDragging = true;
+		dragButton = event.button;
+		dragConversion =
+			event.button === 2 || (useTouchControls && mobileConversion === 'power') ? 'power' : 'score';
 		latestChainMonster = '';
 		optimisticChainIds = [];
 		previousDragPoint = pointerWorld;
@@ -506,16 +522,16 @@
 			dispatch({ type: 'fire', direction: { x: dx / length, y: dy / length } });
 			return;
 		}
-		if (!isDragging || event.button !== 0) return;
+		if (!isDragging || event.button !== dragButton) return;
 		isDragging = false;
+		dragButton = 0;
 		previousDragPoint = null;
 		if (!latestChainMonster) {
 			dispatch({ type: 'chain-cancel' });
 			return;
 		}
 		latestChainMonster = '';
-		commitAfterTick =
-			event.shiftKey || (useTouchControls && mobileConversion === 'power') ? 'power' : 'score';
+		commitAfterTick = event.shiftKey ? 'power' : dragConversion;
 	}
 
 	function toggleMobileAim() {
@@ -601,6 +617,8 @@
 
 	function cancelControls() {
 		isDragging = false;
+		dragButton = 0;
+		dragConversion = 'score';
 		isAiming = false;
 		mobileAimArmed = false;
 		pointerOverPlayer = false;
@@ -1127,16 +1145,22 @@
 						{:else if mode === 'tutorial' && tutorialStep === 0}
 							<strong>KEEP DRAGGING</strong><small>CONNECT THE HIGHLIGHTED ROUTE</small>
 						{:else if mode === 'tutorial' && tutorialStep === 1}
-							<strong>RELEASE TO BANK SCORE</strong><small>YOU LAND ON THE LAST CREATURE</small>
+							<strong>RELEASE TO {dragConversion === 'power' ? 'STORE POWER' : 'BANK SCORE'}</strong
+							><small
+								>{dragConversion === 'power'
+									? 'RIGHT-DRAG CONVERTS THE ROUTE TO POWER'
+									: 'YOU LAND ON THE LAST CREATURE'}</small
+							>
 						{:else if mode === 'tutorial' && tutorialStep === 3 && useTouchControls}
 							<strong>POWER MODE SELECTED</strong><small>RELEASE TO FORGE POWER</small>
 						{:else if mode === 'tutorial' && tutorialStep === 3}
-							<strong>HOLD SHIFT + RELEASE</strong><small>CONVERT THIS CHAIN TO POWER</small>
+							<strong>RIGHT-DRAG + RELEASE</strong><small>STORE THIS CHAIN AS POWER</small>
 						{:else if useTouchControls}
 							<strong>RELEASE: {mobileConversion === 'power' ? 'FORGE POWER' : 'BANK SCORE'}</strong
 							><small>CHOOSE MODE BEFORE STARTING A CHAIN</small>
 						{:else}
-							<strong>RELEASE: SCORE</strong><small>SHIFT + RELEASE: POWER</small>
+							<strong>RELEASE: {dragConversion === 'power' ? 'STORE POWER' : 'BANK SCORE'}</strong
+							><small>LMB SCORES · RMB STORES POWER</small>
 						{/if}
 					</div>
 				{/if}
@@ -1233,10 +1257,11 @@
 			{/if}
 			{#if mode !== 'tutorial'}
 				<div class="quick-controls">
-					<span><kbd>DRAG FROM HERO</kbd> ROUTE + MOVE</span><span><kbd>⇧ RELEASE</kbd> POWER</span
+					<span><kbd>LMB FROM HERO</kbd> SCORE ROUTE</span><span
+						><kbd>RMB FROM HERO</kbd> POWER ROUTE</span
 					><span><kbd>DRAG BACK</kbd> SHORTEN ROUTE</span><span
-						><kbd>HOLD RMB</kbd> AIM / SCOUT</span
-					><span><kbd>RELEASE RMB</kbd> FIRE ALL</span><span><kbd>SPACE</kbd> PARRY</span>
+						><kbd>RMB OFF HERO</kbd> AIM / SCOUT</span
+					><span><kbd>RELEASE AIM</kbd> FIRE ALL</span><span><kbd>SPACE</kbd> PARRY</span>
 					<span><kbd>NUM 7–9 / 4·6 / 1–3</kbd> KEYBOARD ROUTE</span><span
 						><kbd>NUM 5 / ENTER</kbd> SCORE</span
 					><span><kbd>NUM +</kbd> POWER</span><span><kbd>NUM 0</kbd> CANCEL</span>
