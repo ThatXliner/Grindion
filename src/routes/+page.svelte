@@ -46,13 +46,19 @@
 		},
 		{
 			title: 'Charge Power',
-			copy: 'Build another chain. Hold Shift as you release to convert it to Power.'
+			copy: 'Build another chain. Hold Shift as you release to convert it to Power.',
+			mobileCopy: 'Power mode is selected below. Build another chain and release to convert it.'
 		},
 		{
 			title: 'Take the shot',
-			copy: 'Hold right mouse to scout and aim. Release to fire every volt.'
+			copy: 'Hold right mouse to scout and aim. Release to fire every volt.',
+			mobileCopy: 'Tap Aim + Fire, drag across the board to aim, then release to fire every volt.'
 		},
-		{ title: 'Parry', copy: 'The dummy is firing. Press Space just before the shot reaches you.' },
+		{
+			title: 'Parry',
+			copy: 'The dummy is firing. Press Space just before the shot reaches you.',
+			mobileCopy: 'The dummy is firing. Tap Parry just before the shot reaches you.'
+		},
 		{
 			title: 'Training complete',
 			copy: 'You know the loop. Enter the live arena when you are ready.'
@@ -68,6 +74,9 @@
 	let isAiming = $state(false);
 	let pointerOverPlayer = $state(false);
 	let hasCommittedChain = $state(false);
+	let useTouchControls = $state(false);
+	let mobileAimArmed = $state(false);
+	let mobileConversion = $state<'score' | 'power'>('score');
 	let pointerWorld = $state<Point>({ x: 720, y: 450 });
 	let latestChainMonster = '';
 	let commitAfterTick: 'score' | 'power' | null = null;
@@ -118,6 +127,11 @@
 
 	function stageTutorialRoute(state: GameState, color: 'coral' | 'cyan', preferredIds?: string[]) {
 		tutorialRouteIds = configureTutorialRoute(state, 'human', color, preferredIds);
+	}
+
+	function tutorialStepCopy() {
+		const step = TUTORIAL_STEPS[tutorialStep];
+		return useTouchControls && 'mobileCopy' in step ? step.mobileCopy : step.copy;
 	}
 
 	function prepareTutorial(state: GameState) {
@@ -176,6 +190,7 @@
 	function continueAfterReachLesson() {
 		if (mode !== 'tutorial' || tutorialStep !== 2 || !game) return;
 		stageTutorialRoute(game, 'cyan');
+		mobileConversion = 'power';
 		tutorialStep = 3;
 	}
 
@@ -187,6 +202,8 @@
 		isAiming = false;
 		pointerOverPlayer = false;
 		hasCommittedChain = false;
+		mobileAimArmed = false;
+		mobileConversion = 'score';
 		chainAnimations.clear();
 		if (game) {
 			const position = game.players[humanId]?.position ?? { x: 720, y: 450 };
@@ -294,7 +311,7 @@
 
 	function nearestMonster(point: Point) {
 		let best: Monster | undefined;
-		let bestDistance = 35;
+		let bestDistance = useTouchControls ? 46 : 35;
 		for (const monster of monsters) {
 			if (!monster.alive) continue;
 			const distance = Math.hypot(monster.position.x - point.x, monster.position.y - point.y);
@@ -310,7 +327,7 @@
 		if (mode === 'title' || chainAnimations.has(humanId)) return;
 		canvas.setPointerCapture(event.pointerId);
 		pointerWorld = canvasPoint(event);
-		if (event.button === 2) {
+		if (event.button === 2 || (useTouchControls && mobileAimArmed && event.button === 0)) {
 			event.preventDefault();
 			isAiming = true;
 			return;
@@ -321,7 +338,11 @@
 			pointerWorld.x - me.position.x,
 			pointerWorld.y - me.position.y
 		);
-		if (distanceFromPlayer > Math.max(38, (game?.config.playerRadius ?? 18) * 2)) return;
+		if (
+			distanceFromPlayer >
+			Math.max(useTouchControls ? 52 : 38, (game?.config.playerRadius ?? 18) * 2)
+		)
+			return;
 		isDragging = true;
 		latestChainMonster = '';
 	}
@@ -332,7 +353,7 @@
 		pointerOverPlayer = Boolean(
 			me &&
 			Math.hypot(pointerWorld.x - me.position.x, pointerWorld.y - me.position.y) <=
-				Math.max(38, (game?.config.playerRadius ?? 18) * 2)
+				Math.max(useTouchControls ? 52 : 38, (game?.config.playerRadius ?? 18) * 2)
 		);
 		if (!isDragging) return;
 		const monster = nearestMonster(pointerWorld);
@@ -344,8 +365,10 @@
 	}
 
 	function onPointerUp(event: PointerEvent) {
-		if (event.button === 2 && isAiming) {
+		const mobileShot = useTouchControls && mobileAimArmed && event.button === 0;
+		if ((event.button === 2 || mobileShot) && isAiming) {
 			isAiming = false;
+			mobileAimArmed = false;
 			pointerWorld = canvasPoint(event);
 			const position = me?.position ?? { x: 0, y: 0 };
 			const dx = pointerWorld.x - position.x;
@@ -361,7 +384,15 @@
 			return;
 		}
 		latestChainMonster = '';
-		commitAfterTick = event.shiftKey ? 'power' : 'score';
+		commitAfterTick =
+			event.shiftKey || (useTouchControls && mobileConversion === 'power') ? 'power' : 'score';
+	}
+
+	function toggleMobileAim() {
+		if (!game || !me || mode === 'title' || isDragging || chainAnimations.has(humanId)) return;
+		mobileAimArmed = !mobileAimArmed;
+		isAiming = mobileAimArmed;
+		if (mobileAimArmed) pointerWorld = { x: me.position.x + 120, y: me.position.y };
 	}
 
 	function onKeyDown(event: KeyboardEvent) {
@@ -380,6 +411,7 @@
 	function cancelControls() {
 		isDragging = false;
 		isAiming = false;
+		mobileAimArmed = false;
 		pointerOverPlayer = false;
 	}
 
@@ -721,6 +753,10 @@
 	}
 
 	onMount(() => {
+		const touchQuery = window.matchMedia('(pointer: coarse), (max-width: 700px)');
+		const updateTouchControls = () => (useTouchControls = touchQuery.matches);
+		updateTouchControls();
+		touchQuery.addEventListener('change', updateTouchControls);
 		spriteSheet = new Image();
 		spriteSheet.src = '/assets/grindion-sprites.png';
 		let frame = 0;
@@ -775,7 +811,10 @@
 			frame = requestAnimationFrame(loop);
 		};
 		frame = requestAnimationFrame(loop);
-		return () => cancelAnimationFrame(frame);
+		return () => {
+			cancelAnimationFrame(frame);
+			touchQuery.removeEventListener('change', updateTouchControls);
+		};
 	});
 </script>
 
@@ -811,7 +850,7 @@
 							>LESSON {Math.min(tutorialStep + 1, TUTORIAL_STEPS.length)} / {TUTORIAL_STEPS.length}</span
 						>
 						<h2>{TUTORIAL_STEPS[tutorialStep].title}</h2>
-						<p>{TUTORIAL_STEPS[tutorialStep].copy}</p>
+						<p>{tutorialStepCopy()}</p>
 					</div>
 					<div class="lesson-dots">
 						{#each TUTORIAL_STEPS as step, index (step.title)}<i
@@ -890,8 +929,13 @@
 							<strong>KEEP DRAGGING</strong><small>CONNECT THE HIGHLIGHTED ROUTE</small>
 						{:else if mode === 'tutorial' && tutorialStep === 1}
 							<strong>RELEASE TO BANK SCORE</strong><small>YOU LAND ON THE LAST CREATURE</small>
+						{:else if mode === 'tutorial' && tutorialStep === 3 && useTouchControls}
+							<strong>POWER MODE SELECTED</strong><small>RELEASE TO FORGE POWER</small>
 						{:else if mode === 'tutorial' && tutorialStep === 3}
 							<strong>HOLD SHIFT + RELEASE</strong><small>CONVERT THIS CHAIN TO POWER</small>
+						{:else if useTouchControls}
+							<strong>RELEASE: {mobileConversion === 'power' ? 'FORGE POWER' : 'BANK SCORE'}</strong
+							><small>CHOOSE MODE BEFORE STARTING A CHAIN</small>
 						{:else}
 							<strong>RELEASE: SCORE</strong><small>SHIFT + RELEASE: POWER</small>
 						{/if}
@@ -932,6 +976,33 @@
 					</div>
 				{/if}
 			</div>
+			{#if mode !== 'title' && useTouchControls && isRunning}
+				<div class="mobile-controls" role="group" aria-label="Touch game controls">
+					{#if mode === 'arena' || tutorialStep === 3}
+						<div class="mobile-conversion" aria-label="Chain reward">
+							<button
+								class:active={mobileConversion === 'score'}
+								aria-pressed={mobileConversion === 'score'}
+								onclick={() => (mobileConversion = 'score')}>BANK SCORE</button
+							><button
+								class:active={mobileConversion === 'power'}
+								aria-pressed={mobileConversion === 'power'}
+								onclick={() => (mobileConversion = 'power')}>FORGE POWER</button
+							>
+						</div>
+					{/if}
+					{#if mode === 'arena' || tutorialStep === 4}
+						<button
+							class:active={mobileAimArmed}
+							aria-pressed={mobileAimArmed}
+							onclick={toggleMobileAim}>{mobileAimArmed ? 'CANCEL AIM' : 'AIM + FIRE'}</button
+						>
+					{/if}
+					{#if mode === 'arena' || tutorialStep === 5}
+						<button class="parry-control" onclick={() => dispatch({ type: 'parry' })}>PARRY</button>
+					{/if}
+				</div>
+			{/if}
 			{#if mode !== 'tutorial'}
 				<div class="quick-controls">
 					<span><kbd>DRAG FROM HERO</kbd> ROUTE + MOVE</span><span><kbd>⇧ RELEASE</kbd> POWER</span
@@ -1458,6 +1529,42 @@
 		color: #9eb6ac;
 		font: 800 8px monospace;
 	}
+	.mobile-controls {
+		position: sticky;
+		z-index: 10;
+		bottom: max(6px, env(safe-area-inset-bottom));
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 7px;
+		padding: 8px 0 max(4px, env(safe-area-inset-bottom));
+		background: linear-gradient(transparent, #0b141f 28%);
+	}
+	.mobile-controls button {
+		min-width: 0;
+		min-height: 52px;
+		padding: 8px 6px;
+		color: #fff0ad;
+		background: #302333;
+		border-width: 3px;
+		box-shadow: 3px 3px 0 #080b11;
+		font-size: 9px;
+		touch-action: manipulation;
+	}
+	.mobile-controls button.active {
+		color: #17212a;
+		background: #64dce5;
+		border-color: #fff0ad;
+	}
+	.mobile-controls .parry-control {
+		color: #281d2b;
+		background: #ffe36e;
+	}
+	.mobile-conversion {
+		display: grid;
+		grid-column: span 2;
+		grid-template-columns: 1fr 1fr;
+		gap: 5px;
+	}
 	kbd {
 		padding: 3px 5px;
 		color: #fff0ad;
@@ -1575,8 +1682,8 @@
 			display: none;
 		}
 		.arena-frame {
-			min-height: 600px;
-			height: 78vh;
+			min-height: 500px;
+			height: 72dvh;
 		}
 		.server-state {
 			display: none;
@@ -1587,11 +1694,30 @@
 	}
 	@media (max-width: 520px) {
 		.shell {
-			padding: 6px;
+			padding: 4px 6px max(6px, env(safe-area-inset-bottom));
+		}
+		.topbar {
+			height: 48px;
+			margin-bottom: 6px;
+		}
+		.brand-mark {
+			width: 30px;
+			height: 30px;
+		}
+		.brand-lockup strong {
+			font-size: 14px;
+		}
+		.training-progress {
+			font-size: 7px;
 		}
 		.arena-frame {
-			min-height: 560px;
+			height: calc(100dvh - 190px);
+			min-height: 400px;
+			max-height: none;
 			border-width: 3px;
+		}
+		.tutorial-layout .arena-frame {
+			height: calc(100dvh - 240px);
 		}
 		.title-actions {
 			flex-direction: column;
@@ -1610,10 +1736,44 @@
 		}
 		.tutorial-card {
 			grid-template-columns: 1fr;
-			gap: 8px;
+			gap: 6px;
+			min-height: 0;
+			margin-bottom: 6px;
+			padding: 9px 10px;
+			border-width: 3px;
+		}
+		.tutorial-card h2 {
+			font-size: 17px;
+		}
+		.tutorial-card p {
+			font-size: 9px;
 		}
 		.tutorial-card button {
 			grid-column: 1;
+		}
+		.quick-controls {
+			display: none;
+		}
+		.mobile-controls {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+		.mobile-conversion {
+			grid-column: 1 / -1;
+		}
+		.start-overlay {
+			padding: 20px 14px;
+		}
+		.start-overlay h1 {
+			font-size: 50px;
+		}
+	}
+	@media (max-height: 600px) and (pointer: coarse) {
+		.arena-frame {
+			height: 72dvh;
+			min-height: 350px;
+		}
+		.topbar {
+			display: none;
 		}
 	}
 </style>

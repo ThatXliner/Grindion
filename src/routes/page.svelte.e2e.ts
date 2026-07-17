@@ -77,3 +77,40 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 	await expect(page.locator('.power-card')).toBeVisible();
 	await expect(page.locator('.heart-hud')).toHaveCount(0);
 });
+
+test('provides complete touch controls on a phone viewport', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.goto('/');
+	await page.getByRole('button', { name: 'ENTER ARENA ⚔' }).click();
+
+	const controls = page.getByRole('group', { name: 'Touch game controls' });
+	await expect(controls).toBeVisible();
+	await expect(page.getByRole('button', { name: 'BANK SCORE' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await page.getByRole('button', { name: 'FORGE POWER' }).click();
+	await expect(page.getByRole('button', { name: 'FORGE POWER' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await expect(page.getByRole('button', { name: 'PARRY' })).toBeVisible();
+
+	await page.getByRole('button', { name: 'AIM + FIRE' }).click();
+	await expect(page.getByRole('button', { name: 'CANCEL AIM' })).toBeVisible();
+	await expect(page.getByText('RELEASE TO FIRE ALL 15 POWER')).toBeVisible();
+	const canvas = page.locator('canvas');
+	const box = await canvas.boundingBox();
+	expect(box).not.toBeNull();
+	await page.mouse.move(box!.x + box!.width * 0.75, box!.y + box!.height * 0.45);
+	await page.mouse.down();
+	await page.mouse.move(box!.x + box!.width * 0.85, box!.y + box!.height * 0.35, { steps: 4 });
+	await page.mouse.up();
+	await expect(page.getByText('POWER COMMITTED')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'AIM + FIRE' })).toBeVisible();
+
+	const hasHorizontalOverflow = await page.evaluate(
+		() => document.documentElement.scrollWidth > window.innerWidth
+	);
+	expect(hasHorizontalOverflow).toBe(false);
+});
