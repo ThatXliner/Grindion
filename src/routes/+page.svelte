@@ -7,7 +7,14 @@
 		reachForScore,
 		stepGame
 	} from '$lib/game';
-	import type { GameEvent, GameIntent, GameState, Monster, PlayerState } from '$lib/game';
+	import type {
+		GameEvent,
+		GameIntent,
+		GameState,
+		Monster,
+		MonsterColor,
+		PlayerState
+	} from '$lib/game';
 
 	type Point = { x: number; y: number };
 	type WithoutPlayer<T> = T extends { playerId: string } ? Omit<T, 'playerId'> : never;
@@ -15,7 +22,7 @@
 	type GameMode = 'title' | 'arena' | 'tutorial';
 
 	const TUTORIAL_STEPS = [
-		{ title: 'Choose a route', copy: 'Drag through 3+ adjacent creatures of one color.' },
+		{ title: 'Choose a route', copy: 'Drag through the 3 glowing coral creatures.' },
 		{ title: 'Move + bank', copy: 'Release to claim Score and land on the final creature.' },
 		{
 			title: 'Charge Power',
@@ -46,15 +53,16 @@
 	let eventId = 0;
 	let tutorialStep = $state(0);
 	let tutorialShotAt = 0;
+	let tutorialRouteIds = $state<string[]>([]);
 	let camera = { x: 720, y: 450, viewWidth: 570 };
 	let spriteSheet: HTMLImageElement | null = null;
 	const SPRITE_FRAMES = [
-		{ x: 50, y: 180, width: 305, height: 320 },
-		{ x: 405, y: 175, width: 305, height: 320 },
-		{ x: 745, y: 180, width: 330, height: 310 },
-		{ x: 1095, y: 175, width: 295, height: 320 },
-		{ x: 1445, y: 220, width: 285, height: 250 },
-		{ x: 1725, y: 170, width: 300, height: 340 }
+		{ x: 55, y: 185, width: 305, height: 315 },
+		{ x: 414, y: 180, width: 300, height: 315 },
+		{ x: 760, y: 185, width: 320, height: 305 },
+		{ x: 1165, y: 185, width: 230, height: 310 },
+		{ x: 1448, y: 235, width: 285, height: 220 },
+		{ x: 1740, y: 180, width: 300, height: 330 }
 	] as const;
 	const botController = createBotController(8_172);
 
@@ -81,27 +89,58 @@
 			.map((player, index) => ({ ...player, rank: index + 1 }))
 	);
 
+	function stageTutorialRoute(
+		state: GameState,
+		color: Exclude<MonsterColor, 'gold'>,
+		preferredIds?: string[]
+	) {
+		const human = state.players.human!;
+		const alive = Object.values(state.arena.monsters).filter((monster) => monster.alive);
+		for (const monster of alive) monster.color = 'gold';
+		const withinReach = (monster: Monster) =>
+			Math.hypot(monster.position.x - human.position.x, monster.position.y - human.position.y) <=
+			human.reach;
+		let route = (preferredIds ?? [])
+			.map((id) => state.arena.monsters[id])
+			.filter((monster): monster is Monster => Boolean(monster?.alive && withinReach(monster)));
+		if (route.length < 3) {
+			route = [];
+			const candidates = alive
+				.filter(withinReach)
+				.sort(
+					(a, b) =>
+						Math.hypot(a.position.x - human.position.x, a.position.y - human.position.y) -
+							Math.hypot(b.position.x - human.position.x, b.position.y - human.position.y) ||
+						a.id.localeCompare(b.id)
+				);
+			for (const first of candidates) {
+				for (const secondId of first.neighborIds) {
+					const second = state.arena.monsters[secondId];
+					if (!second?.alive || !withinReach(second)) continue;
+					const third = second.neighborIds
+						.map((id) => state.arena.monsters[id])
+						.find((monster) => monster?.alive && monster.id !== first.id && withinReach(monster));
+					if (third) {
+						route = [first, second, third];
+						break;
+					}
+				}
+				if (route.length === 3) break;
+			}
+		}
+		for (const monster of route) monster.color = color;
+		tutorialRouteIds = route.map((monster) => monster.id);
+	}
+
 	function prepareTutorial(state: GameState) {
 		const human = state.players.human!;
 		const dummy = state.players.dummy!;
-		human.position = { x: 720, y: 450 };
+		human.position = { x: 720, y: 580 };
 		human.power = 0;
 		dummy.position = { x: 1080, y: 450 };
 		dummy.power = 120;
 		dummy.protectedUntilMs = Number.POSITIVE_INFINITY;
-		const cluster = Object.values(state.arena.monsters).slice(0, 9);
-		const colors = ['coral', 'cyan', 'gold'] as const;
-		for (const [index, monster] of cluster.entries()) {
-			const group = Math.floor(index / 3);
-			monster.position = {
-				x: 665 + (index % 3) * 55,
-				y: 365 + group * 85
-			};
-			monster.color = colors[group]!;
-			monster.neighborIds = cluster
-				.filter((_, other) => Math.floor(other / 3) === group && Math.abs(other - index) === 1)
-				.map((item) => item.id);
-		}
+		stageTutorialRoute(state, 'coral', ['m96', 'm97', 'm98']);
 		return state;
 	}
 
@@ -171,16 +210,18 @@
 			event.type === 'chain-committed' &&
 			event.playerId === humanId &&
 			event.conversion === 'score'
-		)
+		) {
+			if (game) stageTutorialRoute(game, 'cyan');
 			tutorialStep = 2;
-		else if (
+		} else if (
 			tutorialStep === 2 &&
 			event.type === 'chain-committed' &&
 			event.playerId === humanId &&
 			event.conversion === 'power'
-		)
+		) {
+			tutorialRouteIds = [];
 			tutorialStep = 3;
-		else if (
+		} else if (
 			tutorialStep === 3 &&
 			event.type === 'projectile-fired' &&
 			event.playerId === humanId
@@ -416,6 +457,24 @@
 
 		for (const monster of monsters) {
 			if (!monster.alive) continue;
+			if (mode === 'tutorial' && tutorialRouteIds.includes(monster.id)) {
+				const pulse = 27 + Math.sin((game?.timeMs ?? 0) * 0.008) * 3;
+				context.fillStyle = 'rgba(255, 241, 166, 0.18)';
+				context.fillRect(
+					monster.position.x - pulse,
+					monster.position.y - pulse,
+					pulse * 2,
+					pulse * 2
+				);
+				context.strokeStyle = '#fff1a6';
+				context.lineWidth = 3;
+				context.strokeRect(
+					monster.position.x - pulse,
+					monster.position.y - pulse,
+					pulse * 2,
+					pulse * 2
+				);
+			}
 			if (
 				!drawSprite(context, spriteIndex(monster.color), monster.position.x, monster.position.y, 45)
 			) {
@@ -549,6 +608,22 @@
 
 	<section class="play-layout">
 		<div class="arena-column">
+			{#if mode === 'tutorial'}
+				<div class="tutorial-card">
+					<div>
+						<span>LESSON {Math.min(tutorialStep + 1, 6)} / 6</span>
+						<h2>{TUTORIAL_STEPS[tutorialStep].title}</h2>
+						<p>{TUTORIAL_STEPS[tutorialStep].copy}</p>
+					</div>
+					<div class="lesson-dots">
+						{#each TUTORIAL_STEPS as step, index (step.title)}<i
+								class:done={index < tutorialStep}
+								class:current={index === tutorialStep}
+							></i>{/each}
+					</div>
+					{#if tutorialStep === 5}<button onclick={startArena}>ENTER LIVE ARENA →</button>{/if}
+				</div>
+			{/if}
 			<div
 				class:dragging={isDragging}
 				class:aiming={isAiming}
@@ -610,21 +685,6 @@
 							{event.text}
 						</div>{/each}
 				</div>
-
-				{#if mode === 'tutorial'}
-					<div class="tutorial-card">
-						<span>LESSON {Math.min(tutorialStep + 1, 6)} / 6</span>
-						<h2>{TUTORIAL_STEPS[tutorialStep].title}</h2>
-						<p>{TUTORIAL_STEPS[tutorialStep].copy}</p>
-						<div class="lesson-dots">
-							{#each TUTORIAL_STEPS as step, index (step.title)}<i
-									class:done={index < tutorialStep}
-									class:current={index === tutorialStep}
-								></i>{/each}
-						</div>
-						{#if tutorialStep === 5}<button onclick={startArena}>ENTER LIVE ARENA →</button>{/if}
-					</div>
-				{/if}
 
 				{#if mode === 'title'}
 					<div class="start-overlay">
@@ -1070,19 +1130,20 @@
 		font-size: 44px;
 	}
 	.tutorial-card {
-		position: absolute;
-		z-index: 6;
-		top: 82px;
-		left: 50%;
-		width: min(410px, calc(100% - 28px));
-		transform: translateX(-50%);
-		padding: 11px 14px;
+		display: grid;
+		grid-template-columns: 1fr auto;
+		align-items: center;
+		gap: 8px 20px;
+		width: 100%;
+		min-height: 76px;
+		margin-bottom: 10px;
+		padding: 10px 14px;
 		color: #2a1c2d;
 		background: #fff0ad;
 		border: 4px solid #4b2f3d;
 		box-shadow: 5px 5px 0 #110e17;
 	}
-	.tutorial-card > span {
+	.tutorial-card > div:first-child > span {
 		color: #b1454b;
 		font: 1000 8px monospace;
 		letter-spacing: 0.13em;
@@ -1099,7 +1160,7 @@
 	.lesson-dots {
 		display: flex;
 		gap: 4px;
-		margin-top: 8px;
+		margin: 0;
 	}
 	.lesson-dots i {
 		width: 22px;
@@ -1113,9 +1174,8 @@
 		background: #2f7b78;
 	}
 	.tutorial-card button {
-		position: absolute;
-		top: calc(100% + 10px);
-		right: 0;
+		grid-column: 2;
+		padding: 9px 12px;
 	}
 	.quick-controls {
 		display: flex;
@@ -1276,7 +1336,11 @@
 			padding-inline: 10px;
 		}
 		.tutorial-card {
-			top: 75px;
+			grid-template-columns: 1fr;
+			gap: 8px;
+		}
+		.tutorial-card button {
+			grid-column: 1;
 		}
 	}
 </style>
