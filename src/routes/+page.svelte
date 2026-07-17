@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import {
 		arenaGridMetrics,
 		configureTutorialRoute,
@@ -12,6 +13,13 @@
 	import type { GameEvent, GameIntent, GameState, Monster, PlayerState } from '$lib/game';
 
 	type Point = { x: number; y: number };
+	type ChainAnimation = {
+		playerId: string;
+		origin: Point;
+		nodes: { id: string; position: Point; color: Monster['color'] }[];
+		startedAt: number;
+		stepMs: number;
+	};
 	type WithoutPlayer<T> = T extends { playerId: string } ? Omit<T, 'playerId'> : never;
 	type HumanIntent = WithoutPlayer<GameIntent>;
 	type GameMode = 'title' | 'arena' | 'tutorial';
@@ -19,9 +27,13 @@
 	const TUTORIAL_STEPS = [
 		{
 			title: 'Choose a route',
-			copy: 'Drag from the cyan-outlined coral beside your hero, then follow the route.'
+			copy: 'Press on your hero, then drag into the cyan-outlined coral and follow the route.'
 		},
 		{ title: 'Move + bank', copy: 'Release to claim Score and land on the final creature.' },
+		{
+			title: 'Read your reach',
+			copy: 'The dashed ring is your reach. Banking Score expands it and max health logarithmically: early points help most.'
+		},
 		{
 			title: 'Charge Power',
 			copy: 'Build another chain. Hold Shift as you release to convert it to Power.'
@@ -52,7 +64,10 @@
 	let tutorialStep = $state(0);
 	let tutorialShotAt = 0;
 	let tutorialRouteIds = $state<string[]>([]);
-	let camera = { x: 720, y: 450, viewWidth: 570 };
+	const NORMAL_VIEW_WIDTH = 570;
+	const AIM_VIEW_WIDTH = 680;
+	const chainAnimations = new SvelteMap<string, ChainAnimation>();
+	let camera = { x: 720, y: 450, viewWidth: NORMAL_VIEW_WIDTH };
 	let spriteSheet: HTMLImageElement | null = null;
 	const SPRITE_FRAMES = [
 		{ x: 55, y: 185, width: 305, height: 315 },
@@ -144,19 +159,45 @@
 		startSession('tutorial');
 	}
 
+	function continueAfterReachLesson() {
+		if (mode !== 'tutorial' || tutorialStep !== 2 || !game) return;
+		stageTutorialRoute(game, 'cyan');
+		tutorialStep = 3;
+	}
+
 	function startSession(nextMode: 'arena' | 'tutorial') {
 		mode = nextMode;
 		eventFeed = [];
 		isRunning = true;
 		isDragging = false;
 		isAiming = false;
+		chainAnimations.clear();
 		if (game) {
 			const position = game.players[humanId]?.position ?? { x: 720, y: 450 };
-			camera = { ...position, viewWidth: 570 };
+			camera = { ...position, viewWidth: NORMAL_VIEW_WIDTH };
 		}
 	}
 
 	function addEvent(event: GameEvent) {
+		if (event.type === 'chain-committed' && game) {
+			const nodes = event.monsterIds
+				.map((id) => game?.arena.monsters[id])
+				.filter(Boolean)
+				.map((monster) => ({
+					id: monster!.id,
+					position: { ...monster!.position },
+					color: monster!.color
+				}));
+			if (nodes.length) {
+				chainAnimations.set(event.playerId, {
+					playerId: event.playerId,
+					origin: { ...event.origin },
+					nodes,
+					startedAt: performance.now(),
+					stepMs: 105
+				});
+			}
+		}
 		let text = '';
 		let tone = 'neutral';
 		if (event.type === 'projectile-parried') {
@@ -175,7 +216,7 @@
 		if (text) eventFeed = [{ id: eventId++, text, tone }, ...eventFeed].slice(0, 3);
 
 		if (mode !== 'tutorial') return;
-		if (tutorialStep === 4 && event.type === 'player-damaged' && event.playerId === humanId) {
+		if (tutorialStep === 5 && event.type === 'player-damaged' && event.playerId === humanId) {
 			const human = game?.players[humanId];
 			if (human) {
 				human.health = human.maxHealth;
@@ -188,30 +229,30 @@
 			event.playerId === humanId &&
 			event.conversion === 'score'
 		) {
-			if (game) stageTutorialRoute(game, 'cyan');
+			tutorialRouteIds = [];
 			tutorialStep = 2;
 		} else if (
-			tutorialStep === 2 &&
+			tutorialStep === 3 &&
 			event.type === 'chain-committed' &&
 			event.playerId === humanId &&
 			event.conversion === 'power'
 		) {
 			tutorialRouteIds = [];
-			tutorialStep = 3;
+			tutorialStep = 4;
 		} else if (
-			tutorialStep === 3 &&
+			tutorialStep === 4 &&
 			event.type === 'projectile-fired' &&
 			event.playerId === humanId
 		) {
-			tutorialStep = 4;
+			tutorialStep = 5;
 			if (game?.players[humanId]) game.players[humanId]!.power = 15;
 			tutorialShotAt = (game?.timeMs ?? 0) + 1100;
 		} else if (
-			tutorialStep === 4 &&
+			tutorialStep === 5 &&
 			event.type === 'projectile-parried' &&
 			event.playerId === humanId
 		)
-			tutorialStep = 5;
+			tutorialStep = 6;
 	}
 
 	let queuedIntents: GameIntent[] = [];
@@ -249,7 +290,7 @@
 	}
 
 	function onPointerDown(event: PointerEvent) {
-		if (mode === 'title') return;
+		if (mode === 'title' || chainAnimations.has(humanId)) return;
 		canvas.setPointerCapture(event.pointerId);
 		pointerWorld = canvasPoint(event);
 		if (event.button === 2) {
@@ -258,11 +299,14 @@
 			return;
 		}
 		if (event.button !== 0) return;
-		const monster = nearestMonster(pointerWorld);
-		if (!monster) return;
+		if (!me) return;
+		const distanceFromPlayer = Math.hypot(
+			pointerWorld.x - me.position.x,
+			pointerWorld.y - me.position.y
+		);
+		if (distanceFromPlayer > Math.max(38, (game?.config.playerRadius ?? 18) * 2)) return;
 		isDragging = true;
-		latestChainMonster = monster.id;
-		dispatch({ type: 'chain-start', monsterId: monster.id });
+		latestChainMonster = '';
 	}
 
 	function onPointerMove(event: PointerEvent) {
@@ -271,8 +315,9 @@
 		if (!isDragging) return;
 		const monster = nearestMonster(pointerWorld);
 		if (monster && monster.id !== latestChainMonster) {
+			const intentType = latestChainMonster ? 'chain-extend' : 'chain-start';
 			latestChainMonster = monster.id;
-			dispatch({ type: 'chain-extend', monsterId: monster.id });
+			dispatch({ type: intentType, monsterId: monster.id });
 		}
 	}
 
@@ -289,6 +334,10 @@
 		}
 		if (!isDragging || event.button !== 0) return;
 		isDragging = false;
+		if (!latestChainMonster) {
+			dispatch({ type: 'chain-cancel' });
+			return;
+		}
 		latestChainMonster = '';
 		commitAfterTick = event.shiftKey ? 'power' : 'score';
 	}
@@ -348,7 +397,22 @@
 		return '#f8f2d4';
 	}
 
-	function draw() {
+	function animatedPlayerPosition(player: PlayerState, now: number): Point {
+		const animation = chainAnimations.get(player.id);
+		if (!animation?.nodes.length) return player.position;
+		const elapsed = Math.max(0, now - animation.startedAt);
+		const segment = Math.min(animation.nodes.length - 1, Math.floor(elapsed / animation.stepMs));
+		const progress = Math.min(1, (elapsed - segment * animation.stepMs) / animation.stepMs);
+		const eased = 1 - Math.pow(1 - progress, 3);
+		const from = segment === 0 ? animation.origin : animation.nodes[segment - 1]!.position;
+		const to = animation.nodes[segment]!.position;
+		return {
+			x: from.x + (to.x - from.x) * eased,
+			y: from.y + (to.y - from.y) * eased - Math.sin(progress * Math.PI) * 16
+		};
+	}
+
+	function draw(now: number) {
 		if (!canvas || !game) return;
 		const rect = canvas.getBoundingClientRect();
 		const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -363,9 +427,13 @@
 		if (!context) return;
 		context.setTransform(dpr, 0, 0, dpr, 0, 0);
 		context.clearRect(0, 0, rect.width, rect.height);
-		camera.viewWidth += ((isAiming ? 760 : 570) - camera.viewWidth) * 0.1;
+		for (const [playerId, animation] of chainAnimations) {
+			if (now - animation.startedAt > animation.nodes.length * animation.stepMs + 220)
+				chainAnimations.delete(playerId);
+		}
+		camera.viewWidth += ((isAiming ? AIM_VIEW_WIDTH : NORMAL_VIEW_WIDTH) - camera.viewWidth) * 0.16;
 		const view = viewport(rect);
-		const target = me?.position ?? { x: 720, y: 450 };
+		const target = me ? animatedPlayerPosition(me, now) : { x: 720, y: 450 };
 		const lookAhead = isAiming
 			? { x: (pointerWorld.x - target.x) * 0.1, y: (pointerWorld.y - target.y) * 0.1 }
 			: { x: 0, y: 0 };
@@ -421,11 +489,14 @@
 			context.setLineDash([]);
 		}
 
-		if (me) {
+		if (me && (mode !== 'tutorial' || tutorialStep >= 2)) {
 			context.beginPath();
-			context.arc(me.position.x, me.position.y, reach, 0, Math.PI * 2);
-			context.strokeStyle = 'rgba(255,227,110,.25)';
-			context.lineWidth = 3;
+			context.arc(target.x, target.y, reach, 0, Math.PI * 2);
+			const teachingReach = mode === 'tutorial' && tutorialStep === 2;
+			context.strokeStyle = teachingReach
+				? `rgba(100,220,229,${0.72 + Math.sin(now * 0.008) * 0.18})`
+				: 'rgba(255,227,110,.25)';
+			context.lineWidth = teachingReach ? 6 : 3;
 			context.setLineDash([8, 9]);
 			context.stroke();
 			context.setLineDash([]);
@@ -477,6 +548,41 @@
 			}
 		}
 
+		for (const animation of chainAnimations.values()) {
+			const elapsed = Math.max(0, now - animation.startedAt);
+			const hitCount = Math.min(animation.nodes.length, Math.floor(elapsed / animation.stepMs));
+			for (const node of animation.nodes.slice(hitCount)) {
+				if (game.arena.monsters[node.id]?.alive) continue;
+				drawSprite(context, spriteIndex(node.color), node.position.x, node.position.y, 45);
+			}
+			for (let index = Math.max(0, hitCount - 2); index < hitCount; index++) {
+				const node = animation.nodes[index]!;
+				const impactAge = elapsed - (index + 1) * animation.stepMs;
+				if (impactAge < 0 || impactAge > 190) continue;
+				const impactProgress = impactAge / 190;
+				context.strokeStyle = `rgba(255,227,110,${1 - impactProgress})`;
+				context.lineWidth = 5 - impactProgress * 3;
+				context.beginPath();
+				context.arc(node.position.x, node.position.y, 12 + impactProgress * 34, 0, Math.PI * 2);
+				context.stroke();
+				for (let ray = 0; ray < 6; ray++) {
+					const angle = (Math.PI * 2 * ray) / 6;
+					const inner = 14 + impactProgress * 16;
+					const outer = 25 + impactProgress * 30;
+					context.beginPath();
+					context.moveTo(
+						node.position.x + Math.cos(angle) * inner,
+						node.position.y + Math.sin(angle) * inner
+					);
+					context.lineTo(
+						node.position.x + Math.cos(angle) * outer,
+						node.position.y + Math.sin(angle) * outer
+					);
+					context.stroke();
+				}
+			}
+		}
+
 		for (const projectile of projectiles) {
 			context.save();
 			context.translate(projectile.position.x, projectile.position.y);
@@ -487,17 +593,18 @@
 
 		for (const player of players) {
 			if (player.mode === 'dead') continue;
+			const visualPosition = animatedPlayerPosition(player, now);
 			const local = player.id === humanId;
 			const playerMax = player.maxHealth ?? maxHealthForScore(player.score);
 			const healthRatio = Math.max(0, player.health / playerMax);
 			if (player.mode === 'parrying')
-				drawSprite(context, 5, player.position.x, player.position.y, 78);
-			drawSprite(context, 0, player.position.x, player.position.y, local ? 62 : 52);
+				drawSprite(context, 5, visualPosition.x, visualPosition.y, 78);
+			drawSprite(context, 0, visualPosition.x, visualPosition.y, local ? 62 : 52);
 			context.fillStyle = '#281d2b';
-			context.fillRect(player.position.x - 27, player.position.y - 42, 54, 7);
+			context.fillRect(visualPosition.x - 27, visualPosition.y - 42, 54, 7);
 			context.fillStyle =
 				healthRatio > 0.35 ? (local ? '#ffe36e' : colorFor(player.color)) : '#ff665f';
-			context.fillRect(player.position.x - 25, player.position.y - 40, 50 * healthRatio, 3);
+			context.fillRect(visualPosition.x - 25, visualPosition.y - 40, 50 * healthRatio, 3);
 		}
 
 		if (isAiming && me) {
@@ -531,7 +638,7 @@
 					if (mode === 'arena') intents.push(...(botController.update?.(game) ?? []));
 					if (
 						mode === 'tutorial' &&
-						tutorialStep === 4 &&
+						tutorialStep === 5 &&
 						tutorialShotAt &&
 						game.timeMs >= tutorialShotAt
 					) {
@@ -565,7 +672,7 @@
 				}
 				if (game.timeMs >= game.roundEndsAtMs) isRunning = false;
 			}
-			draw();
+			draw(now);
 			frame = requestAnimationFrame(loop);
 		};
 		frame = requestAnimationFrame(loop);
@@ -601,7 +708,9 @@
 			{#if mode === 'tutorial'}
 				<div class="tutorial-card">
 					<div>
-						<span>LESSON {Math.min(tutorialStep + 1, 6)} / 6</span>
+						<span
+							>LESSON {Math.min(tutorialStep + 1, TUTORIAL_STEPS.length)} / {TUTORIAL_STEPS.length}</span
+						>
 						<h2>{TUTORIAL_STEPS[tutorialStep].title}</h2>
 						<p>{TUTORIAL_STEPS[tutorialStep].copy}</p>
 					</div>
@@ -611,7 +720,9 @@
 								class:current={index === tutorialStep}
 							></i>{/each}
 					</div>
-					{#if tutorialStep === 5}<button onclick={startArena}>ENTER LIVE ARENA →</button>{/if}
+					{#if tutorialStep === 2}<button onclick={continueAfterReachLesson}>BUILD POWER →</button
+						>{/if}
+					{#if tutorialStep === 6}<button onclick={startArena}>ENTER LIVE ARENA →</button>{/if}
 				</div>
 			{/if}
 			<div
@@ -633,7 +744,7 @@
 
 				{#if mode !== 'title' && (mode === 'arena' || tutorialStep > 0)}
 					<div class:tutorial-hud={mode === 'tutorial'} class="player-hud">
-						{#if mode === 'arena' || tutorialStep >= 4}
+						{#if mode === 'arena' || tutorialStep >= 5}
 							<div
 								class="heart-hud"
 								aria-label={`Health ${Math.ceil(health)} of ${Math.ceil(maxHealth)}`}
@@ -649,12 +760,12 @@
 						{/if}
 						{#if mode === 'arena' || tutorialStep >= 1}
 							<div class="score-card">
-								<span>SCORE</span><strong>{score}</strong>{#if mode === 'arena'}<small
-										>RANGE {Math.round(reach)}</small
+								<span>SCORE</span><strong>{score}</strong
+								>{#if mode === 'arena' || tutorialStep >= 2}<small>RANGE {Math.round(reach)}</small
 									>{/if}
 							</div>
 						{/if}
-						{#if mode === 'arena' || tutorialStep >= 2}
+						{#if mode === 'arena' || tutorialStep >= 3}
 							<div class="power-card">
 								<span>{isAiming ? 'ARMED · ALL IN' : 'POWER RESERVE'}</span><strong
 									>{Math.floor(power)}</strong
@@ -662,6 +773,9 @@
 							</div>
 						{/if}
 					</div>
+				{/if}
+				{#if mode === 'tutorial' && tutorialStep === 2}
+					<div class="range-callout">DASHED RING = CURRENT REACH</div>
 				{/if}
 				{#if isAiming}
 					<div class="aim-callout">RELEASE TO FIRE ALL {Math.floor(power)} POWER</div>
@@ -674,7 +788,7 @@
 							<strong>KEEP DRAGGING</strong><small>CONNECT THE HIGHLIGHTED ROUTE</small>
 						{:else if mode === 'tutorial' && tutorialStep === 1}
 							<strong>RELEASE TO BANK SCORE</strong><small>YOU LAND ON THE LAST CREATURE</small>
-						{:else if mode === 'tutorial' && tutorialStep === 2}
+						{:else if mode === 'tutorial' && tutorialStep === 3}
 							<strong>HOLD SHIFT + RELEASE</strong><small>CONVERT THIS CHAIN TO POWER</small>
 						{:else}
 							<strong>RELEASE: SCORE</strong><small>SHIFT + RELEASE: POWER</small>
@@ -1042,6 +1156,20 @@
 		background: #2c2030;
 		border: 3px solid #64dce5;
 		box-shadow: 3px 3px 0 #110d16;
+		font: 1000 9px monospace;
+		letter-spacing: 0.08em;
+	}
+	.range-callout {
+		position: absolute;
+		z-index: 5;
+		left: 50%;
+		bottom: 24px;
+		transform: translateX(-50%);
+		padding: 8px 11px;
+		color: #dffcff;
+		background: rgba(7, 18, 27, 0.92);
+		border: 3px solid #64dce5;
+		box-shadow: 4px 4px 0 #110d16;
 		font: 1000 9px monospace;
 		letter-spacing: 0.08em;
 	}

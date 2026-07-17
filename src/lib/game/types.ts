@@ -119,6 +119,8 @@ export type GameEvent =
 			conversion: 'score' | 'power';
 			length: number;
 			value: number;
+			origin: Vec2;
+			monsterIds: string[];
 	  }
 	| { type: 'chain-truncated'; playerId: string; length: number }
 	| { type: 'projectile-fired'; playerId: string; projectileId: string; power: number }

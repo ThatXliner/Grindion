@@ -73,6 +73,7 @@ describe('game engine', () => {
 		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
 		const chain = connectedChain(state);
 		placePlayerBesideChain(state, 'a', chain);
+		const origin = { ...state.players.a!.position };
 		const destination = { ...state.arena.monsters[chain[chain.length - 1]!]!.position };
 		let result = stepGame(state, [
 			{ type: 'chain-start', playerId: 'a', monsterId: chain[0]! },
@@ -84,6 +85,14 @@ describe('game engine', () => {
 		expect(result.state.players.a!.score).toBe(chainValue(chain.length));
 		expect(result.state.players.a!.position).toEqual(destination);
 		expect(result.state.players.a!.chain).toEqual([]);
+		expect(result.events).toContainEqual(
+			expect.objectContaining({
+				type: 'chain-committed',
+				playerId: 'a',
+				origin,
+				monsterIds: chain
+			})
+		);
 		expect(chain.every((id) => !result.state.arena.monsters[id]!.alive)).toBe(true);
 	});
 

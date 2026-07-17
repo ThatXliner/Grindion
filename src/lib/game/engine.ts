@@ -213,6 +213,7 @@ function commitChain(
 	const ids = [...player.chain],
 		length = ids.length,
 		value = chainValue(length),
+		origin = { ...player.position },
 		destination = { ...state.arena.monsters[ids[length - 1]!]!.position };
 	for (const id of ids) {
 		const monster = state.arena.monsters[id]!;
@@ -238,7 +239,15 @@ function commitChain(
 	player.position = destination;
 	player.cellId = ids[length - 1]!;
 	cancelChain(player);
-	events.push({ type: 'chain-committed', playerId: player.id, conversion, length, value });
+	events.push({
+		type: 'chain-committed',
+		playerId: player.id,
+		conversion,
+		length,
+		value,
+		origin,
+		monsterIds: ids
+	});
 	for (const opponent of Object.values(state.players)) {
 		if (opponent.id !== player.id && truncateUnavailable(state, opponent)) {
 			events.push({
