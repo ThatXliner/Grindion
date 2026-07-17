@@ -349,6 +349,7 @@ function killPlayer(
 	ownerId: string,
 	events: GameEvent[]
 ): void {
+	const previousScore = player.score;
 	player.mode = 'dead';
 	player.deaths++;
 	player.respawnAtMs = state.timeMs + state.config.respawnMs;
@@ -362,7 +363,12 @@ function killPlayer(
 	player.mode = 'dead';
 	const owner = state.players[ownerId];
 	if (owner) owner.kills++;
-	events.push({ type: 'player-died', playerId: player.id, byPlayerId: ownerId });
+	events.push({
+		type: 'player-died',
+		playerId: player.id,
+		byPlayerId: ownerId,
+		scoreLost: previousScore - player.score
+	});
 }
 
 function updateProjectiles(state: GameState, dtSeconds: number, events: GameEvent[]): void {

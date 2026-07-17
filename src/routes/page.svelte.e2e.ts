@@ -114,3 +114,21 @@ test('provides complete touch controls on a phone viewport', async ({ page }) =>
 	);
 	expect(hasHorizontalOverflow).toBe(false);
 });
+
+test('shows a responsive death recap until the authoritative respawn', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.goto('/?respawn-demo=1');
+
+	const recap = page.getByRole('dialog', { name: 'YOU WERE BROKEN' });
+	await expect(recap).toBeVisible();
+	await expect(recap.getByText('SHATTERED BY BOT 4')).toBeVisible();
+	await expect(recap.getByText('−21')).toBeVisible();
+	await expect(recap.getByText('84')).toBeVisible();
+	await expect(recap.getByText('EMPTIED')).toBeVisible();
+	await expect(page.getByRole('group', { name: 'Touch game controls' })).toHaveCount(0);
+
+	const hasHorizontalOverflow = await page.evaluate(
+		() => document.documentElement.scrollWidth > window.innerWidth
+	);
+	expect(hasHorizontalOverflow).toBe(false);
+});

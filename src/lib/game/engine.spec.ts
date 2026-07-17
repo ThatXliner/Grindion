@@ -235,6 +235,12 @@ describe('game engine', () => {
 		let result = stepGame(state, [{ type: 'fire', playerId: 'a', direction: { x: 1, y: 0 } }], 50);
 		expect(result.state.players.b!.mode).toBe('dead');
 		expect(result.state.players.b!.score).toBe(80);
+		expect(result.events).toContainEqual({
+			type: 'player-died',
+			playerId: 'b',
+			byPlayerId: 'a',
+			scoreLost: 20
+		});
 		result = stepGame(result.state, [], 2_000);
 		expect(result.state.players.b!.mode).toBe('neutral');
 		expect(result.state.players.b!.protectedUntilMs).toBeGreaterThan(result.state.timeMs);

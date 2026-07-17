@@ -33,6 +33,7 @@
 	type WithoutPlayer<T> = T extends { playerId: string } ? Omit<T, 'playerId'> : never;
 	type HumanIntent = WithoutPlayer<GameIntent>;
 	type GameMode = 'title' | 'arena' | 'tutorial';
+	type DeathRecap = { killerName: string; scoreLost: number };
 
 	const TUTORIAL_STEPS = [
 		{
@@ -77,6 +78,7 @@
 	let useTouchControls = $state(false);
 	let mobileAimArmed = $state(false);
 	let mobileConversion = $state<'score' | 'power'>('score');
+	let deathRecap = $state<DeathRecap | null>(null);
 	let pointerWorld = $state<Point>({ x: 720, y: 450 });
 	let latestChainMonster = '';
 	let commitAfterTick: 'score' | 'power' | null = null;
@@ -111,6 +113,14 @@
 	const power = $derived(Math.max(0, me?.power ?? 0));
 	const reach = $derived(me?.reach ?? reachForScore(me?.score ?? 0));
 	const chainLength = $derived(me?.chain.length ?? 0);
+	const isDead = $derived(me?.mode === 'dead');
+	const respawnRemainingMs = $derived(
+		isDead && game && me ? Math.max(0, me.respawnAtMs - game.timeMs) : 0
+	);
+	const respawnSeconds = $derived(Math.max(1, Math.ceil(respawnRemainingMs / 1000)));
+	const respawnProgress = $derived(
+		game ? Math.max(0, Math.min(100, 100 - (respawnRemainingMs / game.config.respawnMs) * 100)) : 0
+	);
 	const grindstoneReady = $derived(me ? playerGrindstone(me).ready : false);
 	const secondsLeft = $derived(
 		Math.max(0, Math.ceil(((game?.roundEndsAtMs ?? 300_000) - (game?.timeMs ?? 0)) / 1000))
@@ -170,6 +180,19 @@
 		startSession('arena');
 	}
 
+	function startRespawnPreview() {
+		game = createGame({ seed: 0x52455350, botCount: 7, config: { respawnMs: 10_000 } });
+		humanId = Object.values(game.players).find((player) => !player.isBot)?.id ?? 'player';
+		startSession('arena');
+		const human = game.players[humanId]!;
+		human.score = 84;
+		human.health = 0;
+		human.power = 0;
+		human.mode = 'dead';
+		human.respawnAtMs = game.timeMs + game.config.respawnMs;
+		deathRecap = { killerName: 'Bot 4', scoreLost: 21 };
+	}
+
 	function startTutorial() {
 		game = prepareTutorial(
 			createGame({
@@ -204,6 +227,7 @@
 		hasCommittedChain = false;
 		mobileAimArmed = false;
 		mobileConversion = 'score';
+		deathRecap = null;
 		chainAnimations.clear();
 		if (game) {
 			const position = game.players[humanId]?.position ?? { x: 720, y: 450 };
@@ -248,6 +272,21 @@
 			tone = event.conversion === 'power' ? 'violet' : 'acid';
 		}
 		if (text) eventFeed = [{ id: eventId++, text, tone }, ...eventFeed].slice(0, 3);
+		if (event.type === 'player-died' && event.playerId === humanId) {
+			deathRecap = {
+				killerName: game?.players[event.byPlayerId]?.name ?? 'Unknown rival',
+				scoreLost: event.scoreLost
+			};
+			cancelControls();
+			queuedIntents = [];
+			commitAfterTick = null;
+		} else if (event.type === 'player-respawned' && event.playerId === humanId) {
+			deathRecap = null;
+			addFeedMessage(
+				`REDEPLOYED · ${Math.ceil((game?.config.spawnProtectionMs ?? 0) / 1000)}S SHIELD`,
+				'cyan'
+			);
+		}
 
 		if (mode !== 'tutorial') return;
 		if (tutorialStep === 5 && event.type === 'player-damaged' && event.playerId === humanId) {
@@ -289,9 +328,14 @@
 			tutorialStep = 6;
 	}
 
+	function addFeedMessage(text: string, tone: string) {
+		eventFeed = [{ id: eventId++, text, tone }, ...eventFeed].slice(0, 3);
+	}
+
 	let queuedIntents: GameIntent[] = [];
 	function dispatch(intent: HumanIntent) {
-		if (game && isRunning) queuedIntents.push({ ...intent, playerId: humanId } as GameIntent);
+		if (game && isRunning && !isDead)
+			queuedIntents.push({ ...intent, playerId: humanId } as GameIntent);
 	}
 
 	function viewport(rect: DOMRect) {
@@ -324,7 +368,7 @@
 	}
 
 	function onPointerDown(event: PointerEvent) {
-		if (mode === 'title' || chainAnimations.has(humanId)) return;
+		if (mode === 'title' || isDead || chainAnimations.has(humanId)) return;
 		canvas.setPointerCapture(event.pointerId);
 		pointerWorld = canvasPoint(event);
 		if (event.button === 2 || (useTouchControls && mobileAimArmed && event.button === 0)) {
@@ -389,7 +433,8 @@
 	}
 
 	function toggleMobileAim() {
-		if (!game || !me || mode === 'title' || isDragging || chainAnimations.has(humanId)) return;
+		if (!game || !me || mode === 'title' || isDead || isDragging || chainAnimations.has(humanId))
+			return;
 		mobileAimArmed = !mobileAimArmed;
 		isAiming = mobileAimArmed;
 		if (mobileAimArmed) pointerWorld = { x: me.position.x + 120, y: me.position.y };
@@ -759,6 +804,11 @@
 		touchQuery.addEventListener('change', updateTouchControls);
 		spriteSheet = new Image();
 		spriteSheet.src = '/assets/grindion-sprites.png';
+		if (
+			(import.meta.env.DEV || import.meta.env.VITE_E2E === 'true') &&
+			new URLSearchParams(window.location.search).has('respawn-demo')
+		)
+			startRespawnPreview();
 		let frame = 0;
 		let last = performance.now();
 		let accumulator = 0;
@@ -866,6 +916,7 @@
 			<div
 				class:dragging={isDragging}
 				class:aiming={isAiming}
+				class:dead={isDead}
 				class:player-hover={pointerOverPlayer}
 				class="arena-frame"
 				role="application"
@@ -951,6 +1002,35 @@
 						</div>{/each}
 				</div>
 
+				{#if mode === 'arena' && isDead}
+					<div
+						class="respawn-overlay"
+						role="dialog"
+						aria-modal="true"
+						aria-labelledby="respawn-title"
+					>
+						<div class="respawn-card">
+							<div class="shatter-mark" aria-hidden="true"><span></span><i></i><b></b></div>
+							<div class="eyebrow">SHATTERED BY {deathRecap?.killerName ?? 'A RIVAL'}</div>
+							<h2 id="respawn-title">YOU WERE BROKEN</h2>
+							<div class="death-penalty">
+								<div><span>SCORE LOST</span><strong>−{deathRecap?.scoreLost ?? 0}</strong></div>
+								<div><span>SCORE REMAINING</span><strong>{score}</strong></div>
+								<div><span>POWER</span><strong>EMPTIED</strong></div>
+							</div>
+							<div class="respawn-status">
+								<div><span>REDEPLOYING TO A SAFE CELL</span><strong>{respawnSeconds}</strong></div>
+								<i><em style={`width:${respawnProgress}%`}></em></i>
+							</div>
+							<p>
+								You return at full health with {Math.ceil(
+									(game?.config.spawnProtectionMs ?? 0) / 1000
+								)}s of spawn protection.
+							</p>
+						</div>
+					</div>
+				{/if}
+
 				{#if mode === 'title'}
 					<div class="start-overlay">
 						<div class="crest">G</div>
@@ -976,7 +1056,7 @@
 					</div>
 				{/if}
 			</div>
-			{#if mode !== 'title' && useTouchControls && isRunning}
+			{#if mode !== 'title' && useTouchControls && isRunning && !isDead}
 				<div class="mobile-controls" role="group" aria-label="Touch game controls">
 					{#if mode === 'arena' || tutorialStep === 3}
 						<div class="mobile-conversion" aria-label="Chain reward">
@@ -1393,6 +1473,155 @@
 	.event-violet {
 		color: #c293e8 !important;
 	}
+	.respawn-overlay {
+		position: absolute;
+		z-index: 8;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		padding: 24px;
+		background:
+			radial-gradient(circle at 50% 45%, rgba(89, 36, 53, 0.45), transparent 44%),
+			rgba(5, 10, 17, 0.82);
+		backdrop-filter: blur(3px) saturate(0.65);
+	}
+	.respawn-overlay::before,
+	.respawn-overlay::after {
+		content: '';
+		position: absolute;
+		left: 0;
+		width: 100%;
+		height: 4px;
+		background: repeating-linear-gradient(90deg, #ff665f 0 36px, transparent 36px 52px);
+		opacity: 0.65;
+	}
+	.respawn-overlay::before {
+		top: 0;
+	}
+	.respawn-overlay::after {
+		bottom: 0;
+	}
+	.respawn-card {
+		position: relative;
+		width: min(440px, 100%);
+		padding: 28px 30px 25px;
+		text-align: center;
+		color: #f8edce;
+		background: #231a27;
+		border: 4px solid #5d3545;
+		border-top-color: #ff665f;
+		box-shadow:
+			8px 8px 0 #080a10,
+			inset 0 0 0 2px rgba(255, 102, 95, 0.08);
+	}
+	.respawn-card h2 {
+		margin: 7px 0 20px;
+		color: #fff0ad;
+		font: 1000 clamp(27px, 5vw, 42px)/1 monospace;
+		letter-spacing: -0.06em;
+		text-shadow:
+			3px 3px #8c3444,
+			5px 5px #100d14;
+	}
+	.shatter-mark {
+		position: relative;
+		width: 48px;
+		height: 48px;
+		margin: -52px auto 17px;
+		transform: rotate(45deg);
+		background: #ff665f;
+		border: 4px solid #3e2431;
+		box-shadow: 4px 4px 0 #090a0f;
+	}
+	.shatter-mark span,
+	.shatter-mark i,
+	.shatter-mark b {
+		position: absolute;
+		display: block;
+		width: 5px;
+		height: 28px;
+		background: #fff0ad;
+	}
+	.shatter-mark span {
+		left: 19px;
+		top: 6px;
+		transform: rotate(-12deg);
+	}
+	.shatter-mark i {
+		left: 12px;
+		top: 13px;
+		height: 18px;
+		transform: rotate(54deg);
+	}
+	.shatter-mark b {
+		left: 27px;
+		top: 14px;
+		height: 15px;
+		transform: rotate(61deg);
+	}
+	.death-penalty {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		margin-bottom: 20px;
+		border: 2px solid #49303d;
+	}
+	.death-penalty div {
+		min-width: 0;
+		padding: 11px 8px;
+		border-right: 2px solid #49303d;
+	}
+	.death-penalty div:last-child {
+		border: 0;
+	}
+	.death-penalty span,
+	.respawn-status span {
+		display: block;
+		color: #a99591;
+		font: 900 7px monospace;
+		letter-spacing: 0.1em;
+	}
+	.death-penalty strong {
+		display: block;
+		margin-top: 5px;
+		color: #ff7a76;
+		font: 1000 15px monospace;
+	}
+	.death-penalty div:nth-child(2) strong {
+		color: #ffe36e;
+	}
+	.death-penalty div:nth-child(3) strong {
+		color: #64dce5;
+		font-size: 10px;
+	}
+	.respawn-status > div {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 8px;
+		text-align: left;
+	}
+	.respawn-status strong {
+		color: #fff0ad;
+		font: 1000 24px monospace;
+	}
+	.respawn-status > i {
+		display: block;
+		height: 10px;
+		padding: 2px;
+		background: #0e1820;
+		border: 2px solid #466269;
+	}
+	.respawn-status em {
+		display: block;
+		height: 100%;
+		background: repeating-linear-gradient(90deg, #64dce5 0 16px, #3cb4c1 16px 20px);
+		transition: width 50ms linear;
+	}
+	.respawn-card p {
+		margin: 13px 0 0;
+		color: #9eb6ac;
+		font: 700 9px/1.5 monospace;
+	}
 	.start-overlay {
 		position: absolute;
 		z-index: 9;
@@ -1765,6 +1994,29 @@
 		}
 		.start-overlay h1 {
 			font-size: 50px;
+		}
+		.respawn-overlay {
+			padding: 16px;
+		}
+		.respawn-card {
+			padding: 25px 14px 18px;
+			border-width: 3px;
+		}
+		.respawn-card h2 {
+			margin-bottom: 15px;
+			font-size: 29px;
+		}
+		.shatter-mark {
+			margin-top: -47px;
+		}
+		.death-penalty {
+			margin-bottom: 15px;
+		}
+		.death-penalty div {
+			padding-inline: 4px;
+		}
+		.death-penalty strong {
+			font-size: 13px;
 		}
 	}
 	@media (max-height: 600px) and (pointer: coarse) {
