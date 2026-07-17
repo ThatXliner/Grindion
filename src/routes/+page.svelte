@@ -19,7 +19,7 @@
 	const TUTORIAL_STEPS = [
 		{
 			title: 'Choose a route',
-			copy: 'Start with the cyan-outlined coral beside your hero, then follow the route.'
+			copy: 'Drag from the cyan-outlined coral beside your hero, then follow the route.'
 		},
 		{ title: 'Move + bank', copy: 'Release to claim Score and land on the final creature.' },
 		{
@@ -586,13 +586,17 @@
 			<span class="brand-mark">G</span>
 			<div><strong>GRINDION</strong><span>CHAIN BRAWLER</span></div>
 		</div>
-		<div class:urgent={secondsLeft <= 30} class="round-clock">
-			<span>{mode === 'tutorial' ? 'TRAINING' : 'ROUND'}</span><strong>{timerText}</strong>
-		</div>
-		<div class="server-state"><i></i>{isRunning ? 'SIMULATION LIVE' : 'CAVERN READY'}</div>
+		{#if mode !== 'tutorial'}
+			<div class:urgent={secondsLeft <= 30} class="round-clock">
+				<span>ROUND</span><strong>{timerText}</strong>
+			</div>
+			<div class="server-state"><i></i>{isRunning ? 'SIMULATION LIVE' : 'CAVERN READY'}</div>
+		{:else}
+			<div class="training-progress">TRAINING MODE</div>
+		{/if}
 	</header>
 
-	<section class="play-layout">
+	<section class:tutorial-layout={mode === 'tutorial'} class="play-layout">
 		<div class="arena-column">
 			{#if mode === 'tutorial'}
 				<div class="tutorial-card">
@@ -627,28 +631,36 @@
 					oncontextmenu={(event) => event.preventDefault()}
 				></canvas>
 
-				{#if mode !== 'title'}
-					<div class="player-hud">
-						<div
-							class="heart-hud"
-							aria-label={`Health ${Math.ceil(health)} of ${Math.ceil(maxHealth)}`}
-						>
-							<div>
-								<b>VITALS</b><i
-									><em style={`width:${Math.min(100, (health / Math.max(1, maxHealth)) * 100)}%`}
-									></em></i
-								>
+				{#if mode !== 'title' && (mode === 'arena' || tutorialStep > 0)}
+					<div class:tutorial-hud={mode === 'tutorial'} class="player-hud">
+						{#if mode === 'arena' || tutorialStep >= 4}
+							<div
+								class="heart-hud"
+								aria-label={`Health ${Math.ceil(health)} of ${Math.ceil(maxHealth)}`}
+							>
+								<div>
+									<b>VITALS</b><i
+										><em style={`width:${Math.min(100, (health / Math.max(1, maxHealth)) * 100)}%`}
+										></em></i
+									>
+								</div>
+								<strong>{Math.ceil(health)}</strong>
 							</div>
-							<strong>{Math.ceil(health)}</strong>
-						</div>
-						<div class="score-card">
-							<span>SCORE</span><strong>{score}</strong><small>RANGE {Math.round(reach)}</small>
-						</div>
-						<div class="power-card">
-							<span>{isAiming ? 'ARMED · ALL IN' : 'POWER RESERVE'}</span><strong
-								>{Math.floor(power)}</strong
-							><i><em style={`width:${Math.min(100, (power / 120) * 100)}%`}></em></i>
-						</div>
+						{/if}
+						{#if mode === 'arena' || tutorialStep >= 1}
+							<div class="score-card">
+								<span>SCORE</span><strong>{score}</strong>{#if mode === 'arena'}<small
+										>RANGE {Math.round(reach)}</small
+									>{/if}
+							</div>
+						{/if}
+						{#if mode === 'arena' || tutorialStep >= 2}
+							<div class="power-card">
+								<span>{isAiming ? 'ARMED · ALL IN' : 'POWER RESERVE'}</span><strong
+									>{Math.floor(power)}</strong
+								><i><em style={`width:${Math.min(100, (power / 120) * 100)}%`}></em></i>
+							</div>
+						{/if}
 					</div>
 				{/if}
 				{#if isAiming}
@@ -657,9 +669,16 @@
 
 				{#if chainLength > 0}
 					<div class="chain-status">
-						<span>{chainLength}×</span><strong>RELEASE: SCORE</strong><small
-							>SHIFT + RELEASE: POWER</small
-						>
+						<span>{chainLength}×</span>
+						{#if mode === 'tutorial' && tutorialStep === 0}
+							<strong>KEEP DRAGGING</strong><small>CONNECT THE HIGHLIGHTED ROUTE</small>
+						{:else if mode === 'tutorial' && tutorialStep === 1}
+							<strong>RELEASE TO BANK SCORE</strong><small>YOU LAND ON THE LAST CREATURE</small>
+						{:else if mode === 'tutorial' && tutorialStep === 2}
+							<strong>HOLD SHIFT + RELEASE</strong><small>CONVERT THIS CHAIN TO POWER</small>
+						{:else}
+							<strong>RELEASE: SCORE</strong><small>SHIFT + RELEASE: POWER</small>
+						{/if}
 					</div>
 				{/if}
 				<div class="event-feed" aria-live="polite">
@@ -697,57 +716,61 @@
 					</div>
 				{/if}
 			</div>
-			<div class="quick-controls">
-				<span><kbd>DRAG</kbd> ROUTE + MOVE</span><span><kbd>⇧ RELEASE</kbd> POWER</span><span
-					><kbd>HOLD RMB</kbd> AIM / SCOUT</span
-				><span><kbd>RELEASE RMB</kbd> FIRE ALL</span><span><kbd>SPACE</kbd> PARRY</span>
-			</div>
+			{#if mode !== 'tutorial'}
+				<div class="quick-controls">
+					<span><kbd>DRAG</kbd> ROUTE + MOVE</span><span><kbd>⇧ RELEASE</kbd> POWER</span><span
+						><kbd>HOLD RMB</kbd> AIM / SCOUT</span
+					><span><kbd>RELEASE RMB</kbd> FIRE ALL</span><span><kbd>SPACE</kbd> PARRY</span>
+				</div>
+			{/if}
 		</div>
 
-		<aside class="side-panel">
-			<section class="leaderboard-panel">
-				<div class="panel-heading">
-					<span>{mode === 'tutorial' ? 'TRAINING ROOM' : 'LIVE BOARD'}</span><small
-						>{players.length || 8} ACTIVE</small
-					>
-				</div>
-				<div class="leaders">
-					{#each leaderboard as player (player.id)}<div
-							class:you={player.id === humanId}
-							class="leader-row"
-						>
-							<b>{String(player.rank).padStart(2, '0')}</b><i
-								style={`--player-color:${player.id === humanId ? '#ffe36e' : colorFor(player.color)}`}
-							></i><span>{player.id === humanId ? 'YOU' : player.name}</span><strong
-								>{Math.round(player.score)}</strong
+		{#if mode !== 'tutorial'}
+			<aside class="side-panel">
+				<section class="leaderboard-panel">
+					<div class="panel-heading">
+						<span>LIVE BOARD</span><small>{players.length || 8} ACTIVE</small>
+					</div>
+					<div class="leaders">
+						{#each leaderboard as player (player.id)}<div
+								class:you={player.id === humanId}
+								class="leader-row"
 							>
-						</div>{/each}
+								<b>{String(player.rank).padStart(2, '0')}</b><i
+									style={`--player-color:${player.id === humanId ? '#ffe36e' : colorFor(player.color)}`}
+								></i><span>{player.id === humanId ? 'YOU' : player.name}</span><strong
+									>{Math.round(player.score)}</strong
+								>
+							</div>{/each}
+					</div>
+				</section>
+				<section class="rule-panel">
+					<div class="panel-heading"><span>CAVERN RULES</span><small>THE LOOP</small></div>
+					<ol>
+						<li>
+							<b>1</b>
+							<div><strong>CHAIN</strong><span>Connect creatures of one color.</span></div>
+						</li>
+						<li>
+							<b>2</b>
+							<div>
+								<strong>CHOOSE</strong><span>Score grows reach + health. Power fights.</span>
+							</div>
+						</li>
+						<li>
+							<b>3</b>
+							<div>
+								<strong>COMMIT</strong><span>A shot spends all Power. A parry rewards timing.</span>
+							</div>
+						</li>
+					</ol>
+				</section>
+				<div class="risk-note">
+					<span>GREED HAS A COST</span>
+					<p>Long chains leave you still. Empty your Power and rivals know you cannot parry.</p>
 				</div>
-			</section>
-			<section class="rule-panel">
-				<div class="panel-heading"><span>CAVERN RULES</span><small>THE LOOP</small></div>
-				<ol>
-					<li>
-						<b>1</b>
-						<div><strong>CHAIN</strong><span>Connect creatures of one color.</span></div>
-					</li>
-					<li>
-						<b>2</b>
-						<div><strong>CHOOSE</strong><span>Score grows reach + health. Power fights.</span></div>
-					</li>
-					<li>
-						<b>3</b>
-						<div>
-							<strong>COMMIT</strong><span>A shot spends all Power. A parry rewards timing.</span>
-						</div>
-					</li>
-				</ol>
-			</section>
-			<div class="risk-note">
-				<span>GREED HAS A COST</span>
-				<p>Long chains leave you still. Empty your Power and rivals know you cannot parry.</p>
-			</div>
-		</aside>
+			</aside>
+		{/if}
 	</section>
 </main>
 
@@ -829,11 +852,21 @@
 		background: #6be7ac;
 		box-shadow: 2px 2px 0 #20544b;
 	}
+	.training-progress {
+		grid-column: 3;
+		justify-self: end;
+		color: #9eb6ac;
+		font: 800 9px monospace;
+		letter-spacing: 0.12em;
+	}
 	.play-layout {
 		display: grid;
 		grid-template-columns: minmax(0, 720px) 260px;
 		justify-content: center;
 		gap: 14px;
+	}
+	.play-layout.tutorial-layout {
+		grid-template-columns: minmax(0, 720px);
 	}
 	.arena-column {
 		min-width: 0;
@@ -892,6 +925,19 @@
 			0 6px 0 rgba(6, 9, 15, 0.75),
 			inset 0 0 0 2px rgba(100, 220, 229, 0.08);
 		backdrop-filter: blur(4px);
+	}
+	.player-hud.tutorial-hud {
+		width: auto;
+		min-width: 170px;
+		grid-template-columns: repeat(3, auto);
+	}
+	.tutorial-hud .score-card:first-child,
+	.tutorial-hud .power-card:first-child,
+	.tutorial-hud .heart-hud:first-child {
+		border-left: 0;
+	}
+	.tutorial-hud > :last-child {
+		border-right: 0;
 	}
 	.heart-hud,
 	.score-card,

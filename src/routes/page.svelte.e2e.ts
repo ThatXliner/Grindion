@@ -27,7 +27,11 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 	await page.getByRole('button', { name: 'PLAY TUTORIAL ▶' }).click();
 	await expect(page.getByText('LESSON 1 / 6')).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Choose a route' })).toBeVisible();
-	await expect(page.getByText('2 ACTIVE')).toBeVisible();
+	await expect(page.getByText('TRAINING MODE')).toBeVisible();
+	await expect(page.locator('.player-hud')).toHaveCount(0);
+	await expect(page.locator('.side-panel')).toHaveCount(0);
+	await expect(page.locator('.quick-controls')).toHaveCount(0);
+	await expect(page.getByText(/Drag from the cyan-outlined coral/)).toBeVisible();
 
 	const canvas = page.locator('canvas');
 	const box = await canvas.boundingBox();
@@ -46,6 +50,10 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 	await page.mouse.move(route[1]!.x, route[1]!.y, { steps: 5 });
 	await page.mouse.move(route[2]!.x, route[2]!.y, { steps: 5 });
 	await expect(page.getByRole('heading', { name: 'Move + bank' })).toBeVisible();
+	await expect(page.locator('.score-card')).toBeVisible();
+	await expect(page.locator('.power-card')).toHaveCount(0);
 	await page.mouse.up();
 	await expect(page.getByRole('heading', { name: 'Charge Power' })).toBeVisible();
+	await expect(page.locator('.power-card')).toBeVisible();
+	await expect(page.locator('.heart-hud')).toHaveCount(0);
 });
