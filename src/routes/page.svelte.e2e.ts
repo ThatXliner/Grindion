@@ -115,6 +115,33 @@ test('provides complete touch controls on a phone viewport', async ({ page }) =>
 	expect(hasHorizontalOverflow).toBe(false);
 });
 
+test('supports a diagonal chain on the enlarged phone grid', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.goto('/');
+	await page.getByRole('button', { name: 'PLAY TUTORIAL ▶' }).click();
+
+	const canvas = page.locator('canvas');
+	const box = await canvas.boundingBox();
+	expect(box).not.toBeNull();
+	if (!box) return;
+
+	const tile = (box.width / 460) * 67.5;
+	const hero = { x: box.x + box.width / 2, y: box.y + box.height * 0.54 };
+	const route = [
+		{ x: hero.x, y: hero.y - tile },
+		{ x: hero.x + tile, y: hero.y },
+		{ x: hero.x + tile, y: hero.y - tile }
+	];
+
+	await page.mouse.move(hero.x, hero.y);
+	await page.mouse.down();
+	for (const point of route) await page.mouse.move(point.x, point.y, { steps: 5 });
+
+	await expect(page.getByRole('heading', { name: 'Move + bank' })).toBeVisible();
+	await expect(page.locator('.chain-status span')).toHaveText('3×');
+	await page.mouse.up();
+});
+
 test('shows a responsive death recap until the authoritative respawn', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.goto('/?respawn-demo=1');

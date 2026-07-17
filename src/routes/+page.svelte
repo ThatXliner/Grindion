@@ -89,6 +89,8 @@
 	let tutorialRouteIds = $state<string[]>([]);
 	const NORMAL_VIEW_WIDTH = 570;
 	const AIM_VIEW_WIDTH = 680;
+	const MOBILE_VIEW_WIDTH = 460;
+	const MOBILE_AIM_VIEW_WIDTH = 590;
 	const chainAnimations = new SvelteMap<string, ChainAnimation>();
 	let camera = { x: 720, y: 450, viewWidth: NORMAL_VIEW_WIDTH };
 	let spriteSheet: HTMLImageElement | null = null;
@@ -231,8 +233,13 @@
 		chainAnimations.clear();
 		if (game) {
 			const position = game.players[humanId]?.position ?? { x: 720, y: 450 };
-			camera = { ...position, viewWidth: NORMAL_VIEW_WIDTH };
+			camera = { ...position, viewWidth: desiredViewWidth(false) };
 		}
+	}
+
+	function desiredViewWidth(aiming = isAiming) {
+		if (useTouchControls) return aiming ? MOBILE_AIM_VIEW_WIDTH : MOBILE_VIEW_WIDTH;
+		return aiming ? AIM_VIEW_WIDTH : NORMAL_VIEW_WIDTH;
 	}
 
 	function addEvent(event: GameEvent) {
@@ -391,9 +398,8 @@
 		latestChainMonster = '';
 	}
 
-	function onPointerMove(event: PointerEvent) {
-		if (mode === 'title') return;
-		pointerWorld = canvasPoint(event);
+	function updatePointerState(point: Point) {
+		pointerWorld = point;
 		pointerOverPlayer = Boolean(
 			me &&
 			Math.hypot(pointerWorld.x - me.position.x, pointerWorld.y - me.position.y) <=
@@ -406,6 +412,13 @@
 			latestChainMonster = monster.id;
 			dispatch({ type: intentType, monsterId: monster.id });
 		}
+	}
+
+	function onPointerMove(event: PointerEvent) {
+		if (mode === 'title') return;
+		const coalesced = event.getCoalescedEvents?.() ?? [];
+		const samples = coalesced.length ? coalesced : [event];
+		for (const sample of samples) updatePointerState(canvasPoint(sample));
 	}
 
 	function onPointerUp(event: PointerEvent) {
@@ -597,7 +610,7 @@
 			if (now - animation.startedAt > animation.timing.totalMs + 220)
 				chainAnimations.delete(playerId);
 		}
-		camera.viewWidth += ((isAiming ? AIM_VIEW_WIDTH : NORMAL_VIEW_WIDTH) - camera.viewWidth) * 0.16;
+		camera.viewWidth += (desiredViewWidth() - camera.viewWidth) * 0.16;
 		const view = viewport(rect);
 		const target = me ? animatedPlayerPosition(me, now) : { x: 720, y: 450 };
 		const lookAhead = isAiming
