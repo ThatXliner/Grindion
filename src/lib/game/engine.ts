@@ -169,13 +169,18 @@ function tryAddMonster(
 ): void {
 	if (!canAct(player) || (starting ? player.chain.length > 0 : player.chain.length === 0)) return;
 	const monster = state.arena.monsters[monsterId];
-	if (!monster?.alive || player.chain.includes(monsterId)) return;
+	if (!monster?.alive) return;
 	if (starting) {
 		const origin = state.arena.monsters[player.cellId];
 		if (!origin?.neighborIds.includes(monster.id)) return;
 		player.chain = [monsterId];
 		player.mode = 'chaining';
 		player.protectedUntilMs = state.timeMs;
+		return;
+	}
+	const existingIndex = player.chain.indexOf(monsterId);
+	if (existingIndex >= 0) {
+		player.chain = player.chain.slice(0, existingIndex + 1);
 		return;
 	}
 	const previous = state.arena.monsters[player.chain[player.chain.length - 1]!];

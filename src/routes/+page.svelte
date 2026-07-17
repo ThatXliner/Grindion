@@ -875,8 +875,9 @@
 			{#if mode !== 'tutorial'}
 				<div class="quick-controls">
 					<span><kbd>DRAG</kbd> ROUTE + MOVE</span><span><kbd>⇧ RELEASE</kbd> POWER</span><span
-						><kbd>HOLD RMB</kbd> AIM / SCOUT</span
-					><span><kbd>RELEASE RMB</kbd> FIRE ALL</span><span><kbd>SPACE</kbd> PARRY</span>
+						><kbd>DRAG BACK</kbd> SHORTEN ROUTE</span
+					><span><kbd>HOLD RMB</kbd> AIM / SCOUT</span><span><kbd>RELEASE RMB</kbd> FIRE ALL</span
+					><span><kbd>SPACE</kbd> PARRY</span>
 				</div>
 			{/if}
 		</div>

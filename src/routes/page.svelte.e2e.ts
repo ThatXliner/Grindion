@@ -61,6 +61,10 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 	await page.mouse.move(route[1]!.x, route[1]!.y, { steps: 5 });
 	await page.mouse.move(route[2]!.x, route[2]!.y, { steps: 5 });
 	await expect(page.getByRole('heading', { name: 'Move + bank' })).toBeVisible();
+	await page.mouse.move(route[1]!.x, route[1]!.y, { steps: 5 });
+	await expect(page.locator('.chain-status span')).toHaveText('2×');
+	await page.mouse.move(route[2]!.x, route[2]!.y, { steps: 5 });
+	await expect(page.locator('.chain-status span')).toHaveText('3×');
 	await expect(page.locator('.score-card')).toBeVisible();
 	await expect(page.locator('.power-card')).toHaveCount(0);
 	await page.mouse.up();

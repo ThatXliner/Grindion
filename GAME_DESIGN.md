@@ -107,6 +107,8 @@ continuous and are not snapped to the grid.
 - Each added monster must satisfy the connection rules, initially expected to
   mean adjacency and matching color.
 - The route cannot exceed the player's current Reach.
+- Dragging back onto any earlier monster truncates the provisional route there,
+  allowing the player to reconsider and continue in a different direction.
 - A chain is provisional until committed.
 - A player may cancel a chain at any time and receive no Score or Power.
 - Cancelling returns all provisional monsters to normal board availability.

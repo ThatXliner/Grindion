@@ -109,6 +109,31 @@ describe('game engine', () => {
 		expect(result.state.players.a!.chain).toEqual(route.slice(0, 4));
 	});
 
+	it('backtracks to an earlier monster and allows a different route', () => {
+		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
+		const route = ['m0', 'm1', 'm2', 'm17', 'm32'];
+		const origin = state.arena.monsters.m16!;
+		state.players.a!.cellId = origin.id;
+		state.players.a!.position = { ...origin.position };
+		origin.alive = false;
+		for (const id of [...route, 'm18']) state.arena.monsters[id]!.color = 'coral';
+		state.arena.monsters.m33!.color = 'cyan';
+
+		let result = stepGame(state, [
+			{ type: 'chain-start', playerId: 'a', monsterId: route[0]! },
+			...route
+				.slice(1)
+				.map((monsterId) => ({ type: 'chain-extend' as const, playerId: 'a', monsterId }))
+		]);
+		result = stepGame(result.state, [
+			{ type: 'chain-extend', playerId: 'a', monsterId: 'm2' },
+			{ type: 'chain-extend', playerId: 'a', monsterId: 'm18' },
+			{ type: 'chain-extend', playerId: 'a', monsterId: 'm33' }
+		]);
+
+		expect(result.state.players.a!.chain).toEqual(['m0', 'm1', 'm2', 'm18']);
+	});
+
 	it('builds and banks a valid same-color chain', () => {
 		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
 		const chain = connectedChain(state);
