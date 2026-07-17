@@ -83,6 +83,7 @@ Each player has:
 - `maxHealth`: derived logarithmically from Score
 - `reach`: maximum legal chain distance, derived logarithmically from Score
 - `power`: stored combat resource
+- `cellId`: the square-grid cell currently occupied by the player
 - `chain`: the player's current uncommitted route, if any
 - `mode`: neutral, chaining, aiming, parrying, hit, or dead
 
@@ -93,15 +94,16 @@ player can attack or parry and when a recent attacker is defenseless.
 
 ### Board
 
-The arena places monsters on a square grid. Chains may move to any of the eight
-surrounding cells, including diagonals, matching the connection freedom of the
-original inspiration. A committed chain is the player's only source of
-movement: the avatar traverses the chosen route and ends on its final cell.
-Aiming and projectile motion remain continuous and are not snapped to the grid.
+The arena places monsters and players on one shared, visually aligned square
+grid. A chain must begin on one of the eight cells surrounding the player's
+current cell, then may continue through orthogonal or diagonal neighbors. A
+committed chain is the player's only source of movement: the avatar traverses
+the chosen route and ends on its final cell. Aiming and projectile motion remain
+continuous and are not snapped to the grid.
 
 ### Building a chain
 
-- A chain begins from the player's current reachable area.
+- A chain begins on a monster directly adjacent to the player's current cell.
 - Each added monster must satisfy the connection rules, initially expected to
   mean adjacency and matching color.
 - The route cannot exceed the player's current Reach.

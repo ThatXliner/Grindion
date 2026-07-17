@@ -10,18 +10,26 @@ export function normalize(v: Vec2): Vec2 {
 	return length > 0 ? { x: v.x / length, y: v.y / length } : { x: 0, y: 0 };
 }
 
+export function arenaGridMetrics(config: GameConfig) {
+	const columns = config.monsterColumns;
+	const rows = Math.ceil(config.monsterCount / columns);
+	const cellSize = Math.min((config.width - 90) / columns, (config.height - 90) / rows);
+	return {
+		columns,
+		rows,
+		cellSize,
+		originX: (config.width - columns * cellSize) / 2 + cellSize / 2,
+		originY: (config.height - rows * cellSize) / 2 + cellSize / 2
+	};
+}
+
 export function createArena(
 	config: GameConfig,
 	initialRandomState: number
 ): { arena: Arena; randomState: number } {
 	const monsters: Arena['monsters'] = {};
 	let randomState = initialRandomState;
-	const columns = config.monsterColumns;
-	const rows = Math.ceil(config.monsterCount / columns);
-	const marginX = 90,
-		marginY = 80,
-		dx = (config.width - marginX * 2) / Math.max(1, columns - 1);
-	const dy = (config.height - marginY * 2) / Math.max(1, rows - 1);
+	const { columns, rows, cellSize, originX, originY } = arenaGridMetrics(config);
 	for (let index = 0; index < config.monsterCount; index++) {
 		const row = Math.floor(index / columns),
 			col = index % columns;
@@ -30,8 +38,8 @@ export function createArena(
 		monsters[`m${index}`] = {
 			id: `m${index}`,
 			position: {
-				x: marginX + col * dx,
-				y: marginY + row * dy
+				x: originX + col * cellSize,
+				y: originY + row * cellSize
 			},
 			color: COLORS[Math.floor(random.value * COLORS.length)]!,
 			neighborIds: [],

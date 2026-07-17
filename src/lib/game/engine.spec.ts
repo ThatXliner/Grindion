@@ -23,6 +23,17 @@ function connectedChain(state: GameState, minimum = 3): string[] {
 	throw new Error('No connected chain');
 }
 
+function placePlayerBesideChain(state: GameState, playerId: string, chain: string[]): void {
+	const originId = state.arena.monsters[chain[0]!]!.neighborIds.find(
+		(id) => !chain.includes(id) && state.arena.monsters[id]!.alive
+	);
+	if (!originId) throw new Error('No free origin beside chain');
+	const origin = state.arena.monsters[originId]!;
+	state.players[playerId]!.cellId = origin.id;
+	state.players[playerId]!.position = { ...origin.position };
+	origin.alive = false;
+}
+
 describe('game engine', () => {
 	it('creates identical arenas from the same seed', () => {
 		expect(createGame({ seed: 42 })).toEqual(createGame({ seed: 42 }));
@@ -44,6 +55,9 @@ describe('game engine', () => {
 			}
 		}
 		expect(foundDiagonal).toBe(true);
+		expect(state.arena.monsters.m1!.position.x - state.arena.monsters.m0!.position.x).toBeCloseTo(
+			state.arena.monsters[`m${columns}`]!.position.y - state.arena.monsters.m0!.position.y
+		);
 	});
 
 	it('uses logarithmic growth and power handicap', () => {
@@ -58,7 +72,7 @@ describe('game engine', () => {
 	it('builds and banks a valid same-color chain', () => {
 		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
 		const chain = connectedChain(state);
-		state.players.a!.position = { ...state.arena.monsters[chain[0]!]!.position };
+		placePlayerBesideChain(state, 'a', chain);
 		const destination = { ...state.arena.monsters[chain[chain.length - 1]!]!.position };
 		let result = stepGame(state, [
 			{ type: 'chain-start', playerId: 'a', monsterId: chain[0]! },
@@ -71,6 +85,16 @@ describe('game engine', () => {
 		expect(result.state.players.a!.position).toEqual(destination);
 		expect(result.state.players.a!.chain).toEqual([]);
 		expect(chain.every((id) => !result.state.arena.monsters[id]!.alive)).toBe(true);
+	});
+
+	it('requires a chain to begin on a cell adjacent to the character', () => {
+		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
+		const origin = state.arena.monsters[state.players.a!.cellId]!;
+		const distant = Object.values(state.arena.monsters).find(
+			(monster) => monster.alive && !origin.neighborIds.includes(monster.id)
+		)!;
+		const result = stepGame(state, [{ type: 'chain-start', playerId: 'a', monsterId: distant.id }]);
+		expect(result.state.players.a!.chain).toEqual([]);
 	});
 
 	it('first commit consumes overlap and truncates the competing chain', () => {

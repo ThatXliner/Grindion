@@ -29,13 +29,13 @@ function hasPath(
 }
 
 function nearestMonster(state: GameState, player: PlayerState): Monster | undefined {
-	const alive = Object.values(state.arena.monsters).filter((monster) => monster.alive);
+	const origin = state.arena.monsters[player.cellId];
+	if (!origin) return undefined;
+	const alive = origin.neighborIds
+		.map((id) => state.arena.monsters[id]!)
+		.filter((monster) => monster.alive);
 	const viable = alive.filter((monster) => hasPath(state, monster, state.config.minChain));
-	return (viable.length ? viable : alive).sort(
-		(a, b) =>
-			distance(player.position, a.position) - distance(player.position, b.position) ||
-			a.id.localeCompare(b.id)
-	)[0];
+	return (viable.length ? viable : alive).sort((a, b) => a.id.localeCompare(b.id))[0];
 }
 function directionTo(from: Vec2, to: Vec2): Vec2 {
 	return normalize({ x: to.x - from.x, y: to.y - from.y });

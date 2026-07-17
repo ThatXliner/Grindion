@@ -34,12 +34,12 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 	expect(box).not.toBeNull();
 	const worldToScreen = (x: number, y: number) => ({
 		x: box!.x + box!.width / 2 + ((x - 720) * box!.width) / 570,
-		y: box!.y + box!.height / 2 + ((y - 580) * box!.width) / 570
+		y: box!.y + box!.height / 2 + ((y - 551.25) * box!.width) / 570
 	});
 	const route = [
-		worldToScreen(630, 483.64),
-		worldToScreen(720, 483.64),
-		worldToScreen(810, 483.64)
+		worldToScreen(720, 483.75),
+		worldToScreen(787.5, 483.75),
+		worldToScreen(787.5, 551.25)
 	];
 	await page.mouse.move(route[0]!.x, route[0]!.y);
 	await page.mouse.down();

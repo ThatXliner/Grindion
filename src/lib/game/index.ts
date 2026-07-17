@@ -18,7 +18,7 @@ export {
 	chainValue,
 	powerGain
 } from './tuning';
-export { distance, normalize } from './arena';
+export { arenaGridMetrics, distance, normalize } from './arena';
 export type {
 	Arena,
 	CreateGameOptions,

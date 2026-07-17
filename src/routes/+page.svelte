@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import {
+		arenaGridMetrics,
 		createBotController,
 		createGame,
 		maxHealthForScore,
@@ -22,7 +23,10 @@
 	type GameMode = 'title' | 'arena' | 'tutorial';
 
 	const TUTORIAL_STEPS = [
-		{ title: 'Choose a route', copy: 'Drag through the 3 glowing coral creatures.' },
+		{
+			title: 'Choose a route',
+			copy: 'Start with the cyan-outlined coral beside your hero, then follow the route.'
+		},
 		{ title: 'Move + bank', copy: 'Release to claim Score and land on the final creature.' },
 		{
 			title: 'Charge Power',
@@ -97,16 +101,25 @@
 		const human = state.players.human!;
 		const alive = Object.values(state.arena.monsters).filter((monster) => monster.alive);
 		for (const monster of alive) monster.color = 'gold';
+		const origin = state.arena.monsters[human.cellId];
 		const withinReach = (monster: Monster) =>
 			Math.hypot(monster.position.x - human.position.x, monster.position.y - human.position.y) <=
 			human.reach;
 		let route = (preferredIds ?? [])
 			.map((id) => state.arena.monsters[id])
 			.filter((monster): monster is Monster => Boolean(monster?.alive && withinReach(monster)));
+		if (
+			route.length !== 3 ||
+			!origin?.neighborIds.includes(route[0]!.id) ||
+			!route[0]!.neighborIds.includes(route[1]!.id) ||
+			!route[1]!.neighborIds.includes(route[2]!.id)
+		)
+			route = [];
 		if (route.length < 3) {
 			route = [];
-			const candidates = alive
-				.filter(withinReach)
+			const candidates = (origin?.neighborIds ?? [])
+				.map((id) => state.arena.monsters[id]!)
+				.filter((monster) => monster.alive && withinReach(monster))
 				.sort(
 					(a, b) =>
 						Math.hypot(a.position.x - human.position.x, a.position.y - human.position.y) -
@@ -135,12 +148,30 @@
 	function prepareTutorial(state: GameState) {
 		const human = state.players.human!;
 		const dummy = state.players.dummy!;
-		human.position = { x: 720, y: 580 };
+		const previousCell = state.arena.monsters[human.cellId];
+		if (previousCell) {
+			previousCell.alive = true;
+			previousCell.respawnAtMs = 0;
+		}
+		const startCell = state.arena.monsters.m112!;
+		human.cellId = startCell.id;
+		human.position = { ...startCell.position };
+		startCell.alive = false;
+		startCell.respawnAtMs = 0;
 		human.power = 0;
-		dummy.position = { x: 1080, y: 450 };
+		const previousDummyCell = state.arena.monsters[dummy.cellId];
+		if (previousDummyCell) {
+			previousDummyCell.alive = true;
+			previousDummyCell.respawnAtMs = 0;
+		}
+		const dummyCell = state.arena.monsters.m116!;
+		dummy.cellId = dummyCell.id;
+		dummy.position = { ...dummyCell.position };
+		dummyCell.alive = false;
+		dummyCell.respawnAtMs = 0;
 		dummy.power = 120;
 		dummy.protectedUntilMs = Number.POSITIVE_INFINITY;
-		stageTutorialRoute(state, 'coral', ['m96', 'm97', 'm98']);
+		stageTutorialRoute(state, 'coral', ['m97', 'm98', 'm113']);
 		return state;
 	}
 
@@ -411,18 +442,37 @@
 
 		context.fillStyle = '#172f3c';
 		context.fillRect(0, 0, game.arena.width, game.arena.height);
-		context.fillStyle = '#1e4150';
-		for (let y = 0; y < game.arena.height; y += 72)
-			for (let x = 0; x < game.arena.width; x += 72) {
-				if ((x / 72 + y / 72) % 2) context.fillRect(x, y, 72, 72);
+		const grid = arenaGridMetrics(game.config);
+		for (let row = 0; row < grid.rows; row++) {
+			for (let column = 0; column < grid.columns; column++) {
+				const x = grid.originX + column * grid.cellSize - grid.cellSize / 2;
+				const y = grid.originY + row * grid.cellSize - grid.cellSize / 2;
+				context.fillStyle = (row + column) % 2 ? '#1e4150' : '#183744';
+				context.fillRect(x, y, grid.cellSize, grid.cellSize);
+				context.strokeStyle = 'rgba(100, 220, 229, 0.1)';
+				context.lineWidth = 1;
+				context.strokeRect(x, y, grid.cellSize, grid.cellSize);
 			}
-		context.strokeStyle = '#315a61';
-		context.lineWidth = 5;
-		for (let y = 18; y < game.arena.height; y += 144) {
+		}
+
+		if (mode === 'tutorial' && me && tutorialRouteIds.length) {
+			const route = tutorialRouteIds
+				.map((id) => game?.arena.monsters[id])
+				.filter(Boolean) as Monster[];
+			context.strokeStyle = '#64dce5';
+			context.lineWidth = 6;
 			context.beginPath();
-			context.moveTo(0, y);
-			for (let x = 0; x <= game.arena.width; x += 36) context.lineTo(x, y + Math.sin(x * 0.03) * 7);
+			context.moveTo(me.position.x, me.position.y);
+			if (route[0]) context.lineTo(route[0].position.x, route[0].position.y);
 			context.stroke();
+			context.strokeStyle = 'rgba(255, 241, 166, 0.75)';
+			context.lineWidth = 4;
+			context.setLineDash([7, 7]);
+			context.beginPath();
+			if (route[0]) context.moveTo(route[0].position.x, route[0].position.y);
+			for (const monster of route.slice(1)) context.lineTo(monster.position.x, monster.position.y);
+			context.stroke();
+			context.setLineDash([]);
 		}
 
 		if (me) {
@@ -444,11 +494,8 @@
 			context.lineWidth = 12;
 			context.lineCap = 'round';
 			context.beginPath();
-			linked.forEach((monster, index) =>
-				index
-					? context.lineTo(monster.position.x, monster.position.y)
-					: context.moveTo(monster.position.x, monster.position.y)
-			);
+			context.moveTo(player.position.x, player.position.y);
+			for (const monster of linked) context.lineTo(monster.position.x, monster.position.y);
 			context.stroke();
 			context.strokeStyle = '#4b2533';
 			context.lineWidth = 4;
@@ -458,6 +505,7 @@
 		for (const monster of monsters) {
 			if (!monster.alive) continue;
 			if (mode === 'tutorial' && tutorialRouteIds.includes(monster.id)) {
+				const routeIndex = tutorialRouteIds.indexOf(monster.id);
 				const pulse = 27 + Math.sin((game?.timeMs ?? 0) * 0.008) * 3;
 				context.fillStyle = 'rgba(255, 241, 166, 0.18)';
 				context.fillRect(
@@ -466,7 +514,7 @@
 					pulse * 2,
 					pulse * 2
 				);
-				context.strokeStyle = '#fff1a6';
+				context.strokeStyle = routeIndex === 0 ? '#64dce5' : '#fff1a6';
 				context.lineWidth = 3;
 				context.strokeRect(
 					monster.position.x - pulse,
@@ -504,14 +552,6 @@
 			context.fillStyle =
 				healthRatio > 0.35 ? (local ? '#ffe36e' : colorFor(player.color)) : '#ff665f';
 			context.fillRect(player.position.x - 25, player.position.y - 40, 50 * healthRatio, 3);
-			context.font = 'bold 10px monospace';
-			context.textAlign = 'center';
-			context.fillStyle = '#fff8dc';
-			context.fillText(
-				local ? 'YOU' : player.name.toUpperCase(),
-				player.position.x,
-				player.position.y - 49
-			);
 		}
 
 		if (isAiming && me) {

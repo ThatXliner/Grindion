@@ -60,6 +60,7 @@ export interface PlayerState {
 	isBot: boolean;
 	color: string;
 	position: Vec2;
+	cellId: EntityId;
 	score: number;
 	health: number;
 	maxHealth: number;

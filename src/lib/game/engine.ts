@@ -47,6 +47,7 @@ function makePlayer(
 		isBot: setup.isBot ?? false,
 		color: setup.color ?? PLAYER_COLORS[index % PLAYER_COLORS.length]!,
 		position: spawnPosition(index, count, config),
+		cellId: '',
 		score: 0,
 		health: maxHealth,
 		maxHealth,
@@ -62,6 +63,31 @@ function makePlayer(
 		deaths: 0,
 		kills: 0
 	};
+}
+
+function placePlayerOnSpawnCell(
+	player: PlayerState,
+	index: number,
+	count: number,
+	state: Pick<GameState, 'arena' | 'players' | 'config'>
+): void {
+	const target = spawnPosition(index, count, state.config);
+	const occupied = new Set(
+		Object.values(state.players)
+			.filter((candidate) => candidate.id !== player.id && candidate.mode !== 'dead')
+			.map((candidate) => candidate.cellId)
+	);
+	const cell = Object.values(state.arena.monsters)
+		.filter((monster) => !occupied.has(monster.id))
+		.sort(
+			(a, b) =>
+				distance(a.position, target) - distance(b.position, target) || a.id.localeCompare(b.id)
+		)[0];
+	if (!cell) return;
+	player.cellId = cell.id;
+	player.position = { ...cell.position };
+	cell.alive = false;
+	cell.respawnAtMs = 0;
 }
 
 export function createGame(options: CreateGameOptions = {}): GameState {
@@ -80,7 +106,7 @@ export function createGame(options: CreateGameOptions = {}): GameState {
 	setups.forEach((setup, index) => {
 		players[setup.id] = makePlayer(setup, index, setups.length, config);
 	});
-	return {
+	const state: GameState = {
 		seed,
 		randomState: arenaResult.randomState,
 		tick: 0,
@@ -93,6 +119,10 @@ export function createGame(options: CreateGameOptions = {}): GameState {
 		players,
 		projectiles: {}
 	};
+	Object.values(players).forEach((player, index) =>
+		placePlayerOnSpawnCell(player, index, setups.length, state)
+	);
+	return state;
 }
 
 function cloneState(state: GameState): GameState {
@@ -140,7 +170,8 @@ function tryAddMonster(
 	const monster = state.arena.monsters[monsterId];
 	if (!monster?.alive || player.chain.includes(monsterId)) return;
 	if (starting) {
-		if (distance(player.position, monster.position) > player.reach) return;
+		const origin = state.arena.monsters[player.cellId];
+		if (!origin?.neighborIds.includes(monster.id)) return;
 		player.chain = [monsterId];
 		player.mode = 'chaining';
 		player.protectedUntilMs = state.timeMs;
@@ -205,6 +236,7 @@ function commitChain(
 	// Committing the route is the player's only locomotion. The server resolves
 	// the chain atomically and places the player on its final cell.
 	player.position = destination;
+	player.cellId = ids[length - 1]!;
 	cancelChain(player);
 	events.push({ type: 'chain-committed', playerId: player.id, conversion, length, value });
 	for (const opponent of Object.values(state.players)) {
@@ -311,6 +343,7 @@ function killPlayer(
 	player.reach = reachForScore(player.score, state.config);
 	player.health = 0;
 	player.power = 0;
+	player.cellId = '';
 	cancelChain(player);
 	player.mode = 'dead';
 	const owner = state.players[ownerId];
@@ -372,15 +405,18 @@ function updateRespawnsAndMonsters(state: GameState, events: GameEvent[]): void 
 	const players = Object.values(state.players);
 	for (const [index, player] of players.entries())
 		if (player.mode === 'dead' && state.timeMs >= player.respawnAtMs) {
-			player.position = spawnPosition(index, players.length, state.config);
+			placePlayerOnSpawnCell(player, index, players.length, state);
 			player.health = player.maxHealth;
 			player.power = state.config.initialPower;
 			player.mode = 'neutral';
 			player.protectedUntilMs = state.timeMs + state.config.spawnProtectionMs;
 			events.push({ type: 'player-respawned', playerId: player.id });
 		}
+	const occupiedCells = new Set(
+		players.filter((player) => player.mode !== 'dead').map((player) => player.cellId)
+	);
 	for (const monster of Object.values(state.arena.monsters))
-		if (!monster.alive && state.timeMs >= monster.respawnAtMs) {
+		if (!monster.alive && !occupiedCells.has(monster.id) && state.timeMs >= monster.respawnAtMs) {
 			const random = randomFrom(state.randomState);
 			state.randomState = random.state;
 			monster.color = (['coral', 'cyan', 'gold'] as const)[Math.floor(random.value * 3)]!;
