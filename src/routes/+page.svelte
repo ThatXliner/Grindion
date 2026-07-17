@@ -5,13 +5,22 @@
 		arenaGridMetrics,
 		configureTutorialRoute,
 		createBotController,
+		createChainMotionTiming,
 		createGame,
 		grindstoneState,
 		maxHealthForScore,
 		reachForScore,
+		sampleChainMotion,
 		stepGame
 	} from '$lib/game';
-	import type { GameEvent, GameIntent, GameState, Monster, PlayerState } from '$lib/game';
+	import type {
+		ChainMotionTiming,
+		GameEvent,
+		GameIntent,
+		GameState,
+		Monster,
+		PlayerState
+	} from '$lib/game';
 
 	type Point = { x: number; y: number };
 	type ChainAnimation = {
@@ -19,7 +28,7 @@
 		origin: Point;
 		nodes: { id: string; position: Point; color: Monster['color'] }[];
 		startedAt: number;
-		stepMs: number;
+		timing: ChainMotionTiming;
 	};
 	type WithoutPlayer<T> = T extends { playerId: string } ? Omit<T, 'playerId'> : never;
 	type HumanIntent = WithoutPlayer<GameIntent>;
@@ -202,7 +211,7 @@
 					origin: { ...event.origin },
 					nodes,
 					startedAt: performance.now(),
-					stepMs: 105
+					timing: createChainMotionTiming(nodes.length)
 				});
 			}
 		}
@@ -480,8 +489,9 @@
 		const animation = chainAnimations.get(player.id);
 		if (!animation?.nodes.length) return player.position;
 		const elapsed = Math.max(0, now - animation.startedAt);
-		const segment = Math.min(animation.nodes.length - 1, Math.floor(elapsed / animation.stepMs));
-		const progress = Math.min(1, (elapsed - segment * animation.stepMs) / animation.stepMs);
+		const sample = sampleChainMotion(animation.timing, elapsed);
+		const segment = sample.segment;
+		const progress = sample.progress;
 		const eased = 1 - Math.pow(1 - progress, 3);
 		const from = segment === 0 ? animation.origin : animation.nodes[segment - 1]!.position;
 		const to = animation.nodes[segment]!.position;
@@ -507,7 +517,7 @@
 		context.setTransform(dpr, 0, 0, dpr, 0, 0);
 		context.clearRect(0, 0, rect.width, rect.height);
 		for (const [playerId, animation] of chainAnimations) {
-			if (now - animation.startedAt > animation.nodes.length * animation.stepMs + 220)
+			if (now - animation.startedAt > animation.timing.totalMs + 220)
 				chainAnimations.delete(playerId);
 		}
 		camera.viewWidth += ((isAiming ? AIM_VIEW_WIDTH : NORMAL_VIEW_WIDTH) - camera.viewWidth) * 0.16;
@@ -633,14 +643,16 @@
 
 		for (const animation of chainAnimations.values()) {
 			const elapsed = Math.max(0, now - animation.startedAt);
-			const hitCount = Math.min(animation.nodes.length, Math.floor(elapsed / animation.stepMs));
+			const hitCount = animation.timing.arrivalTimes.filter(
+				(arrivalTime) => elapsed >= arrivalTime
+			).length;
 			for (const node of animation.nodes.slice(hitCount)) {
 				if (game.arena.monsters[node.id]?.alive) continue;
 				drawSprite(context, spriteIndex(node.color), node.position.x, node.position.y, 45);
 			}
 			for (let index = Math.max(0, hitCount - 2); index < hitCount; index++) {
 				const node = animation.nodes[index]!;
-				const impactAge = elapsed - (index + 1) * animation.stepMs;
+				const impactAge = elapsed - animation.timing.arrivalTimes[index]!;
 				if (impactAge < 0 || impactAge > 190) continue;
 				const impactProgress = impactAge / 190;
 				context.strokeStyle = `rgba(255,227,110,${1 - impactProgress})`;

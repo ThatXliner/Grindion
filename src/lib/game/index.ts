@@ -21,6 +21,12 @@ export {
 export { arenaGridMetrics, distance, normalize } from './arena';
 export { configureTutorialRoute } from './tutorial';
 export { canExtendWithColor, grindstoneState, type GrindstoneState } from './chainRules';
+export {
+	createChainMotionTiming,
+	sampleChainMotion,
+	type ChainMotionSample,
+	type ChainMotionTiming
+} from './chainMotion';
 export type {
 	Arena,
 	CreateGameOptions,

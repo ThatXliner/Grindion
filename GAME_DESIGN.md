@@ -101,6 +101,11 @@ committed chain is the player's only source of movement: the avatar traverses
 the chosen route and ends on its final cell. Aiming and projectile motion remain
 continuous and are not snapped to the grid.
 
+Committed traversal uses an accelerating smash cadence. The first few monsters
+have a pronounced impact pause; each later beat becomes shorter until reaching
+a readable minimum delay. Long chains should feel increasingly explosive while
+their individual hits remain countable.
+
 ### Building a chain
 
 - A chain begins on a monster directly adjacent to the player's current cell.
