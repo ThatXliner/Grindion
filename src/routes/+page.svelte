@@ -39,7 +39,7 @@
 	const TUTORIAL_STEPS = [
 		{
 			title: 'Choose a route',
-			copy: 'Drag from your hero into the cyan-outlined coral, or play the route entirely on Numpad: 9 → 6 → 2.',
+			copy: 'Drag from your hero, or play entirely on keyboard: 9 → 6 → 2 on the numpad/number row (E → D → X on a laptop).',
 			mobileCopy:
 				'Press and hold on your hero—not a monster—then drag into the cyan-outlined coral.'
 		},
@@ -111,6 +111,51 @@
 		Numpad1: { x: -1, y: 1 },
 		Numpad2: { x: 0, y: 1 },
 		Numpad3: { x: 1, y: 1 }
+	};
+	const KEYBOARD_DIRECTIONS: Record<string, Point> = {
+		...NUMPAD_DIRECTIONS,
+		Digit7: { x: -1, y: -1 },
+		Digit8: { x: 0, y: -1 },
+		Digit9: { x: 1, y: -1 },
+		Digit4: { x: -1, y: 0 },
+		Digit6: { x: 1, y: 0 },
+		Digit1: { x: -1, y: 1 },
+		Digit2: { x: 0, y: 1 },
+		Digit3: { x: 1, y: 1 },
+		KeyQ: { x: -1, y: -1 },
+		KeyW: { x: 0, y: -1 },
+		KeyE: { x: 1, y: -1 },
+		KeyA: { x: -1, y: 0 },
+		KeyD: { x: 1, y: 0 },
+		KeyZ: { x: -1, y: 1 },
+		KeyX: { x: 0, y: 1 },
+		KeyC: { x: 1, y: 1 }
+	};
+	const KEY_VALUE_DIRECTIONS: Record<string, Point> = {
+		'7': { x: -1, y: -1 },
+		'8': { x: 0, y: -1 },
+		'9': { x: 1, y: -1 },
+		'4': { x: -1, y: 0 },
+		'6': { x: 1, y: 0 },
+		'1': { x: -1, y: 1 },
+		'2': { x: 0, y: 1 },
+		'3': { x: 1, y: 1 },
+		q: { x: -1, y: -1 },
+		w: { x: 0, y: -1 },
+		e: { x: 1, y: -1 },
+		a: { x: -1, y: 0 },
+		d: { x: 1, y: 0 },
+		z: { x: -1, y: 1 },
+		x: { x: 0, y: 1 },
+		c: { x: 1, y: 1 },
+		Home: { x: -1, y: -1 },
+		ArrowUp: { x: 0, y: -1 },
+		PageUp: { x: 1, y: -1 },
+		ArrowLeft: { x: -1, y: 0 },
+		ArrowRight: { x: 1, y: 0 },
+		End: { x: -1, y: 1 },
+		ArrowDown: { x: 0, y: 1 },
+		PageDown: { x: 1, y: 1 }
 	};
 	const chainAnimations = new SvelteMap<string, ChainAnimation>();
 	let camera = { x: 720, y: 450, viewWidth: NORMAL_VIEW_WIDTH };
@@ -578,19 +623,46 @@
 	}
 
 	function onKeyDown(event: KeyboardEvent) {
-		const direction = NUMPAD_DIRECTIONS[event.code];
+		if (mode === 'title') {
+			if (event.code === 'KeyT') {
+				event.preventDefault();
+				startTutorial();
+			} else if (event.code === 'KeyA') {
+				event.preventDefault();
+				startArena();
+			}
+			return;
+		}
+		const direction =
+			KEYBOARD_DIRECTIONS[event.code] ??
+			KEY_VALUE_DIRECTIONS[event.key.toLowerCase()] ??
+			KEY_VALUE_DIRECTIONS[event.key];
 		if (direction) {
 			event.preventDefault();
 			selectNumpadDirection(direction);
 			return;
 		}
 		if (event.repeat) return;
-		if (event.code === 'Numpad5' || event.code === 'NumpadEnter') {
+		if (
+			event.code === 'Numpad5' ||
+			event.code === 'Digit5' ||
+			event.code === 'KeyS' ||
+			event.code === 'NumpadEnter' ||
+			event.code === 'Enter' ||
+			event.key === '5' ||
+			event.key.toLowerCase() === 's' ||
+			event.key === 'Enter'
+		) {
 			event.preventDefault();
 			commitNumpadChain('score');
 			return;
 		}
-		if (event.code === 'NumpadAdd') {
+		if (
+			event.code === 'NumpadAdd' ||
+			event.code === 'KeyF' ||
+			event.key === '+' ||
+			event.key.toLowerCase() === 'f'
+		) {
 			event.preventDefault();
 			commitNumpadChain('power');
 			return;
@@ -598,7 +670,8 @@
 		if (
 			event.code === 'Numpad0' ||
 			event.code === 'NumpadDecimal' ||
-			event.code === 'NumpadSubtract'
+			event.code === 'NumpadSubtract' ||
+			event.key === '0'
 		) {
 			event.preventDefault();
 			cancelActiveChain();
@@ -1215,6 +1288,7 @@
 								onclick={startArena}>ENTER ARENA <span>⚔</span></button
 							>
 						</div>
+						<p class="keyboard-start"><kbd>T</kbd> TUTORIAL · <kbd>A</kbd> ARENA</p>
 					</div>
 				{:else if !isRunning}
 					<div class="start-overlay compact">
@@ -1263,8 +1337,10 @@
 						><kbd>RMB OFF HERO</kbd> AIM / SCOUT</span
 					><span><kbd>RELEASE AIM</kbd> FIRE ALL</span><span><kbd>SPACE</kbd> PARRY</span>
 					<span><kbd>NUM 7–9 / 4·6 / 1–3</kbd> KEYBOARD ROUTE</span><span
-						><kbd>NUM 5 / ENTER</kbd> SCORE</span
-					><span><kbd>NUM +</kbd> POWER</span><span><kbd>NUM 0</kbd> CANCEL</span>
+						><kbd>OR QWE / AD / ZXC</kbd> LAPTOP ROUTE</span
+					><span><kbd>5 / S / ENTER</kbd> SCORE</span><span><kbd>NUM + / F</kbd> POWER</span><span
+						><kbd>NUM 0 / ESC</kbd> CANCEL</span
+					>
 				</div>
 			{/if}
 		</div>

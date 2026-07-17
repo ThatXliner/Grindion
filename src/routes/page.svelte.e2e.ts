@@ -33,7 +33,7 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 	await expect(page.locator('.side-panel')).toHaveCount(0);
 	await expect(page.locator('.quick-controls')).toHaveCount(0);
 	await expect(page.getByText(/Drag from your hero/)).toBeVisible();
-	await expect(page.getByText(/Numpad: 9 → 6 → 2/)).toBeVisible();
+	await expect(page.getByText(/9 → 6 → 2 on the numpad\/number row/)).toBeVisible();
 
 	const canvas = page.locator('canvas');
 	const box = await canvas.boundingBox();
@@ -79,30 +79,30 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 	await expect(page.locator('.heart-hud')).toHaveCount(0);
 });
 
-test('supports chaining, revising, and banking entirely from the numpad', async ({ page }) => {
+test('starts, chains, revises, and banks with zero pointer input', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await page.goto('/');
+	await expect(page.getByRole('heading', { name: 'GRINDION' })).toBeVisible();
 
-	const tutorialButton = page.getByRole('button', { name: 'PLAY TUTORIAL ▶' });
-	await tutorialButton.focus();
-	await page.keyboard.press('Enter');
+	await page.keyboard.press('t');
 	await expect(page.getByRole('heading', { name: 'Choose a route' })).toBeVisible();
 
-	await page.keyboard.press('Numpad9');
+	// These are ordinary laptop number-row keys, not synthetic Numpad event codes.
+	await page.keyboard.press('9');
 	await expect(page.locator('.chain-status span')).toHaveText('1×');
-	await page.keyboard.press('Numpad6');
+	await page.keyboard.press('6');
 	await expect(page.locator('.chain-status span')).toHaveText('2×');
-	await page.keyboard.press('Numpad2');
+	await page.keyboard.press('2');
 	await expect(page.locator('.chain-status span')).toHaveText('3×');
 	await expect(page.getByRole('heading', { name: 'Move + bank' })).toBeVisible();
 
 	// The reverse direction selects an earlier monster, shortening the planned route.
-	await page.keyboard.press('Numpad8');
+	await page.keyboard.press('8');
 	await expect(page.locator('.chain-status span')).toHaveText('2×');
-	await page.keyboard.press('Numpad2');
+	await page.keyboard.press('2');
 	await expect(page.locator('.chain-status span')).toHaveText('3×');
 
-	await page.keyboard.press('Numpad5');
+	await page.keyboard.press('5');
 	await expect(page.getByRole('heading', { name: 'Read your reach' })).toBeVisible();
 	await expect(page.locator('.score-card strong')).toHaveText('3');
 });
