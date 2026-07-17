@@ -14,6 +14,7 @@
   <img alt="Vitest" src="https://img.shields.io/badge/Vitest-6e9f18?style=flat-square&logo=vitest&logoColor=white" />
   <img alt="Playwright" src="https://img.shields.io/badge/Playwright-2eaf55?style=flat-square&logo=playwright&logoColor=white" />
   <img alt="Supabase ready" src="https://img.shields.io/badge/Supabase-ready-3fcf8e?style=flat-square&logo=supabase&logoColor=white" />
+  <a href="https://github.com/ThatXliner/Grindion/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/ThatXliner/Grindion/actions/workflows/ci.yml/badge.svg" /></a>
 </p>
 
 ## What is Grindion?
@@ -117,6 +118,8 @@ npm run build
 ```
 
 The suite covers deterministic engine rules, bot behavior, chain conflicts, the Grindstone switch, tutorial progression, and the browser-level arena flow.
+
+GitHub Actions runs the quality, unit, browser, and production-build checks on every pull request and every push to `main`. Failed browser runs retain a Playwright HTML report for 14 days.
 
 ## Optional Supabase setup
 
