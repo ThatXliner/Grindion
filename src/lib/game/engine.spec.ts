@@ -29,18 +29,21 @@ describe('game engine', () => {
 		expect(createGame({ seed: 42 }).arena).not.toEqual(createGame({ seed: 43 }).arena);
 	});
 
-	it('uses a square grid with orthogonal chain neighbors only', () => {
+	it('uses all eight adjacent cells as square-grid chain neighbors', () => {
 		const state = createGame({ seed: 42 });
 		const columns = state.config.monsterColumns;
+		let foundDiagonal = false;
 		for (const monster of Object.values(state.arena.monsters)) {
 			const index = Number(monster.id.slice(1));
 			for (const neighborId of monster.neighborIds) {
 				const neighbor = Number(neighborId.slice(1));
 				const rowDistance = Math.abs(Math.floor(index / columns) - Math.floor(neighbor / columns));
 				const columnDistance = Math.abs((index % columns) - (neighbor % columns));
-				expect(rowDistance + columnDistance).toBe(1);
+				expect(Math.max(rowDistance, columnDistance)).toBe(1);
+				if (rowDistance === 1 && columnDistance === 1) foundDiagonal = true;
 			}
 		}
+		expect(foundDiagonal).toBe(true);
 	});
 
 	it('uses logarithmic growth and power handicap', () => {

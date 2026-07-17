@@ -42,12 +42,23 @@ export function createArena(
 	for (let index = 0; index < config.monsterCount; index++) {
 		const row = Math.floor(index / columns);
 		const col = index % columns;
-		const neighbors = [
-			row > 0 ? index - columns : -1,
-			col > 0 ? index - 1 : -1,
-			col < columns - 1 ? index + 1 : -1,
-			row < rows - 1 ? index + columns : -1
-		].filter((neighbor) => neighbor >= 0 && neighbor < config.monsterCount);
+		const neighbors: number[] = [];
+		for (let rowOffset = -1; rowOffset <= 1; rowOffset++) {
+			for (let columnOffset = -1; columnOffset <= 1; columnOffset++) {
+				if (rowOffset === 0 && columnOffset === 0) continue;
+				const neighborRow = row + rowOffset;
+				const neighborColumn = col + columnOffset;
+				const neighbor = neighborRow * columns + neighborColumn;
+				if (
+					neighborRow >= 0 &&
+					neighborRow < rows &&
+					neighborColumn >= 0 &&
+					neighborColumn < columns &&
+					neighbor < config.monsterCount
+				)
+					neighbors.push(neighbor);
+			}
+		}
 		monsters[`m${index}`]!.neighborIds = neighbors.map((neighbor) => `m${neighbor}`);
 	}
 	return { arena: { width: config.width, height: config.height, monsters }, randomState };

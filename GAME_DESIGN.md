@@ -92,10 +92,10 @@ player can attack or parry and when a recent attacker is defenseless.
 
 ### Board
 
-The arena places monsters on a square grid. Chains move only between the four
-orthogonal neighbors of a cell; diagonals are not chain connections. Player
-movement, aiming, and projectile motion remain continuous and are not snapped
-to this grid.
+The arena places monsters on a square grid. Chains may move to any of the eight
+surrounding cells, including diagonals, matching the connection freedom of the
+original inspiration. Player movement, aiming, and projectile motion remain
+continuous and are not snapped to this grid.
 
 ### Building a chain
 
