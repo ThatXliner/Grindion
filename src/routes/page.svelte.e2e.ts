@@ -42,9 +42,9 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 		y: box!.y + box!.height / 2 + ((y - 551.25) * box!.width) / 570
 	});
 	const route = [
-		worldToScreen(720, 483.75),
 		worldToScreen(787.5, 483.75),
-		worldToScreen(787.5, 551.25)
+		worldToScreen(855, 483.75),
+		worldToScreen(855, 551.25)
 	];
 	const hero = worldToScreen(720, 551.25);
 
@@ -127,18 +127,14 @@ test('supports a diagonal chain on the enlarged phone grid', async ({ page }) =>
 
 	const tile = (box.width / 460) * 67.5;
 	const hero = { x: box.x + box.width / 2, y: box.y + box.height * 0.54 };
-	const route = [
-		{ x: hero.x, y: hero.y - tile },
-		{ x: hero.x + tile, y: hero.y },
-		{ x: hero.x + tile, y: hero.y - tile }
-	];
+	// One sparse diagonal event lands beyond the monster's circular hitbox.
+	// The swept hit-test must capture exactly the diagonal monster crossed by the segment.
+	const beyondDiagonal = { x: hero.x + tile * 1.5, y: hero.y - tile * 1.5 };
 
 	await page.mouse.move(hero.x, hero.y);
 	await page.mouse.down();
-	for (const point of route) await page.mouse.move(point.x, point.y, { steps: 5 });
-
-	await expect(page.getByRole('heading', { name: 'Move + bank' })).toBeVisible();
-	await expect(page.locator('.chain-status span')).toHaveText('3×');
+	await page.mouse.move(beyondDiagonal.x, beyondDiagonal.y);
+	await expect(page.locator('.chain-status span')).toHaveText('1×');
 	await page.mouse.up();
 });
 

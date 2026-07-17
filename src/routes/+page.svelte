@@ -3,6 +3,7 @@
 	import { SvelteMap } from 'svelte/reactivity';
 	import {
 		arenaGridMetrics,
+		canExtendWithColor,
 		configureTutorialRoute,
 		createBotController,
 		createChainMotionTiming,
@@ -81,6 +82,8 @@
 	let deathRecap = $state<DeathRecap | null>(null);
 	let pointerWorld = $state<Point>({ x: 720, y: 450 });
 	let latestChainMonster = '';
+	let optimisticChainIds: string[] = [];
+	let previousDragPoint: Point | null = null;
 	let commitAfterTick: 'score' | 'power' | null = null;
 	let eventFeed = $state<{ id: number; text: string; tone: string }[]>([]);
 	let eventId = 0;
@@ -172,7 +175,7 @@
 		dummyCell.respawnAtMs = 0;
 		dummy.power = 120;
 		dummy.protectedUntilMs = Number.POSITIVE_INFINITY;
-		stageTutorialRoute(state, 'coral', ['m97', 'm98', 'm113']);
+		stageTutorialRoute(state, 'coral', ['m98', 'm99', 'm114']);
 		return state;
 	}
 
@@ -360,18 +363,57 @@
 		};
 	}
 
-	function nearestMonster(point: Point) {
-		let best: Monster | undefined;
-		let bestDistance = useTouchControls ? 46 : 35;
-		for (const monster of monsters) {
-			if (!monster.alive) continue;
-			const distance = Math.hypot(monster.position.x - point.x, monster.position.y - point.y);
-			if (distance < bestDistance) {
-				best = monster;
-				bestDistance = distance;
-			}
+	function segmentHit(monster: Monster, start: Point, end: Point) {
+		const dx = end.x - start.x;
+		const dy = end.y - start.y;
+		const lengthSquared = dx * dx + dy * dy;
+		const progress = lengthSquared
+			? Math.max(
+					0,
+					Math.min(
+						1,
+						((monster.position.x - start.x) * dx + (monster.position.y - start.y) * dy) /
+							lengthSquared
+					)
+				)
+			: 0;
+		const nearest = { x: start.x + dx * progress, y: start.y + dy * progress };
+		return {
+			progress,
+			distance: Math.hypot(monster.position.x - nearest.x, monster.position.y - nearest.y)
+		};
+	}
+
+	function isLegalChainTarget(monster: Monster) {
+		if (!game || !me || !monster.alive || monster.id === optimisticChainIds.at(-1)) return false;
+		if (!optimisticChainIds.length) {
+			return Boolean(game.arena.monsters[me.cellId]?.neighborIds.includes(monster.id));
 		}
-		return best;
+		if (optimisticChainIds.includes(monster.id)) return true;
+		const previous = game.arena.monsters[optimisticChainIds.at(-1)!];
+		const colors = optimisticChainIds
+			.map((id) => game?.arena.monsters[id]?.color)
+			.filter(Boolean) as Monster['color'][];
+		return Boolean(
+			previous?.neighborIds.includes(monster.id) &&
+			canExtendWithColor(colors, monster.color, game.config.grindstoneStreak) &&
+			Math.hypot(monster.position.x - me.position.x, monster.position.y - me.position.y) <= me.reach
+		);
+	}
+
+	function chainTargetsAlong(start: Point, end: Point) {
+		// Keep mobile circles large enough for a thumb, but below the 47.7-unit
+		// center-to-corner distance so orthogonal tiles cannot steal a diagonal swipe.
+		const hitRadius = useTouchControls ? 40 : 35;
+		return monsters
+			.map((monster) => ({ monster, ...segmentHit(monster, start, end) }))
+			.filter(({ monster, distance }) => monster.alive && distance <= hitRadius)
+			.sort(
+				(a, b) =>
+					a.progress - b.progress ||
+					a.distance - b.distance ||
+					a.monster.id.localeCompare(b.monster.id)
+			);
 	}
 
 	function onPointerDown(event: PointerEvent) {
@@ -396,6 +438,8 @@
 			return;
 		isDragging = true;
 		latestChainMonster = '';
+		optimisticChainIds = [];
+		previousDragPoint = pointerWorld;
 	}
 
 	function updatePointerState(point: Point) {
@@ -406,12 +450,19 @@
 				Math.max(useTouchControls ? 52 : 38, (game?.config.playerRadius ?? 18) * 2)
 		);
 		if (!isDragging) return;
-		const monster = nearestMonster(pointerWorld);
-		if (monster && monster.id !== latestChainMonster) {
-			const intentType = latestChainMonster ? 'chain-extend' : 'chain-start';
+		const start = previousDragPoint ?? pointerWorld;
+		for (const { monster } of chainTargetsAlong(start, pointerWorld)) {
+			if (!isLegalChainTarget(monster)) continue;
+			const intentType = optimisticChainIds.length ? 'chain-extend' : 'chain-start';
+			const existingIndex = optimisticChainIds.indexOf(monster.id);
+			optimisticChainIds =
+				existingIndex >= 0
+					? optimisticChainIds.slice(0, existingIndex + 1)
+					: [...optimisticChainIds, monster.id];
 			latestChainMonster = monster.id;
 			dispatch({ type: intentType, monsterId: monster.id });
 		}
+		previousDragPoint = pointerWorld;
 	}
 
 	function onPointerMove(event: PointerEvent) {
@@ -436,6 +487,7 @@
 		}
 		if (!isDragging || event.button !== 0) return;
 		isDragging = false;
+		previousDragPoint = null;
 		if (!latestChainMonster) {
 			dispatch({ type: 'chain-cancel' });
 			return;
@@ -471,6 +523,8 @@
 		isAiming = false;
 		mobileAimArmed = false;
 		pointerOverPlayer = false;
+		optimisticChainIds = [];
+		previousDragPoint = null;
 	}
 
 	function spriteIndex(color: string | undefined) {

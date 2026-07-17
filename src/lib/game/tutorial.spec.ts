@@ -15,8 +15,8 @@ describe('tutorial route configuration', () => {
 		human.position = { ...start.position };
 		start.alive = false;
 
-		const route = configureTutorialRoute(state, 'human', 'coral', ['m97', 'm98', 'm113']);
-		expect(route).toEqual(['m97', 'm98', 'm113']);
+		const route = configureTutorialRoute(state, 'human', 'coral', ['m98', 'm99', 'm114']);
+		expect(route).toEqual(['m98', 'm99', 'm114']);
 		expect(state.arena.monsters[human.cellId]!.neighborIds).toContain(route[0]);
 		expect(route.every((id) => state.arena.monsters[id]!.color === 'coral')).toBe(true);
 
