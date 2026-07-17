@@ -11,8 +11,10 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = Object.freeze({
 	playerRadius: 16,
 	minChain: 3,
 	baseReach: 150,
-	reachScale: 50,
+	reachScale: 32,
+	reachScoreScale: 25,
 	scoreScale: 100,
+	grindstoneStreak: 5,
 	baseHealth: 100,
 	healthScale: 35,
 	bankHealingPerValue: 0.35,
@@ -37,7 +39,9 @@ export function growthForScore(score: number, config: GameConfig = DEFAULT_CONFI
 	return Math.log1p(Math.max(0, score) / config.scoreScale);
 }
 export function reachForScore(score: number, config: GameConfig = DEFAULT_CONFIG): number {
-	return config.baseReach + config.reachScale * growthForScore(score, config);
+	return (
+		config.baseReach + config.reachScale * Math.log1p(Math.max(0, score) / config.reachScoreScale)
+	);
 }
 export function maxHealthForScore(score: number, config: GameConfig = DEFAULT_CONFIG): number {
 	return config.baseHealth + config.healthScale * growthForScore(score, config);

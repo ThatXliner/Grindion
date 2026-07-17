@@ -20,6 +20,7 @@ export {
 } from './tuning';
 export { arenaGridMetrics, distance, normalize } from './arena';
 export { configureTutorialRoute } from './tutorial';
+export { canExtendWithColor, grindstoneState, type GrindstoneState } from './chainRules';
 export type {
 	Arena,
 	CreateGameOptions,

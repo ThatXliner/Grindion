@@ -62,11 +62,51 @@ describe('game engine', () => {
 
 	it('uses logarithmic growth and power handicap', () => {
 		expect(reachForScore(100)).toBeGreaterThan(reachForScore(0));
+		expect(reachForScore(10)).toBeCloseTo(161, 0);
+		expect(reachForScore(1000)).toBeCloseTo(269, 0);
 		expect(maxHealthForScore(1000) - maxHealthForScore(100)).toBeLessThan(
 			9 * (maxHealthForScore(100) - maxHealthForScore(0))
 		);
 		expect(powerEfficiency(100)).toBeLessThan(powerEfficiency(0));
 		expect(chainValue(8)).toBe(12);
+	});
+
+	it('unlocks one color switch after five consecutive monsters', () => {
+		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
+		const route = ['m0', 'm1', 'm2', 'm17', 'm32', 'm31', 'm30'];
+		const origin = state.arena.monsters.m16!;
+		state.players.a!.cellId = origin.id;
+		state.players.a!.position = { ...origin.position };
+		origin.alive = false;
+		for (const id of route.slice(0, 5)) state.arena.monsters[id]!.color = 'coral';
+		for (const id of route.slice(5)) state.arena.monsters[id]!.color = 'cyan';
+
+		const result = stepGame(state, [
+			{ type: 'chain-start', playerId: 'a', monsterId: route[0]! },
+			...route
+				.slice(1)
+				.map((monsterId) => ({ type: 'chain-extend' as const, playerId: 'a', monsterId }))
+		]);
+		expect(result.state.players.a!.chain).toEqual(route);
+	});
+
+	it('rejects a color switch before the five-monster streak', () => {
+		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
+		const route = ['m0', 'm1', 'm2', 'm17', 'm32'];
+		const origin = state.arena.monsters.m16!;
+		state.players.a!.cellId = origin.id;
+		state.players.a!.position = { ...origin.position };
+		origin.alive = false;
+		for (const id of route.slice(0, 4)) state.arena.monsters[id]!.color = 'gold';
+		state.arena.monsters[route[4]!]!.color = 'cyan';
+
+		const result = stepGame(state, [
+			{ type: 'chain-start', playerId: 'a', monsterId: route[0]! },
+			...route
+				.slice(1)
+				.map((monsterId) => ({ type: 'chain-extend' as const, playerId: 'a', monsterId }))
+		]);
+		expect(result.state.players.a!.chain).toEqual(route.slice(0, 4));
 	});
 
 	it('builds and banks a valid same-color chain', () => {

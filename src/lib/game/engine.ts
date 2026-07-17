@@ -1,4 +1,5 @@
 import { createArena, distance, normalize } from './arena';
+import { canExtendWithColor } from './chainRules';
 import { randomFrom } from './prng';
 import { chainValue, maxHealthForScore, powerGain, reachForScore } from './tuning';
 import { DEFAULT_CONFIG } from './tuning';
@@ -178,11 +179,10 @@ function tryAddMonster(
 		return;
 	}
 	const previous = state.arena.monsters[player.chain[player.chain.length - 1]!];
-	const first = state.arena.monsters[player.chain[0]!];
+	const colors = player.chain.map((id) => state.arena.monsters[id]!.color);
 	if (
 		!previous ||
-		!first ||
-		monster.color !== first.color ||
+		!canExtendWithColor(colors, monster.color, state.config.grindstoneStreak) ||
 		!previous.neighborIds.includes(monster.id)
 	)
 		return;

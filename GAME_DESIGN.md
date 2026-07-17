@@ -111,6 +111,21 @@ continuous and are not snapped to the grid.
 - A player may cancel a chain at any time and receive no Score or Power.
 - Cancelling returns all provisional monsters to normal board availability.
 
+### Rainbow Grindstone switch
+
+The Grindstone is a route state rather than a physical board item:
+
+- Five consecutive monsters of the active color unlock one rainbow switch.
+- The player and chain endpoint glow rainbow while the switch is ready.
+- The next adjacent monster may be a different color and consumes the switch.
+- That monster becomes the first entry in the new color streak.
+- Continuing the current color preserves readiness; switches do not stack.
+- Adjacency, Reach, shared-board conflict, and commitment rules still apply.
+- Being hit cancels the unfinished chain and its rainbow opportunity.
+
+This keeps the original game's color-pivot route planning without requiring a
+shared pickup whose ownership would be difficult to read fairly in real time.
+
 ### Shared-board conflicts
 
 Several players may provisionally route through the same monster. Ownership is
@@ -154,7 +169,7 @@ Score has diminishing returns. Exact constants must be determined through
 simulation and playtesting, but the intended family of formulas is:
 
 ```text
-reach(score) = baseReach + reachScale * ln(1 + score / scoreScale)
+reach(score) = baseReach + reachScale * ln(1 + score / reachScoreScale)
 
 maxHealth(score) = baseHealth + healthScale * ln(1 + score / scoreScale)
 
@@ -171,9 +186,10 @@ Consequences:
 - Timing-based parries remain effective regardless of attacker Score or shot
   strength.
 
-The Score advantage must stay noticeable but modest. Reach and health both
-benefit from Score, so their scales must be tuned together to avoid runaway
-snowballing.
+Reach uses a smaller, independent score scale so its early gains are immediately
+noticeable while its late-game result remains close to the original curve.
+Health and Power efficiency retain their shared, slower growth scale. The Score
+advantage must stay noticeable but modest to avoid runaway snowballing.
 
 ## 8. Shooting
 

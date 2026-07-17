@@ -7,6 +7,7 @@ test('starts a live arena and spends all Power on a shot', async ({ page }) => {
 	await page.getByRole('button', { name: 'ENTER ARENA ⚔' }).click();
 	await expect(page.getByText('SIMULATION LIVE')).toBeVisible();
 	await expect(page.getByText('8 ACTIVE')).toBeVisible();
+	await expect(page.getByText('Chain 5 of one color to unlock one rainbow switch.')).toBeVisible();
 
 	const canvas = page.getByRole('application', { name: 'Grindion game arena' }).locator('canvas');
 	const box = await canvas.boundingBox();

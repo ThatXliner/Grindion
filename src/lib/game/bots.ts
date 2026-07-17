@@ -1,4 +1,5 @@
 import { distance, normalize } from './arena';
+import { canExtendWithColor } from './chainRules';
 import { hashSeed, randomFrom } from './prng';
 import type { GameIntent, GameState, Monster, PlayerState, Vec2 } from './types';
 
@@ -81,13 +82,13 @@ export function createBotController(seed = 1): BotController {
 				}
 				if (player.chain.length) {
 					const tail = state.arena.monsters[player.chain[player.chain.length - 1]!]!;
-					const first = state.arena.monsters[player.chain[0]!]!;
+					const chainColors = player.chain.map((id) => state.arena.monsters[id]!.color);
 					const candidates = tail.neighborIds
 						.map((id) => state.arena.monsters[id]!)
 						.filter(
 							(monster) =>
 								monster.alive &&
-								monster.color === first.color &&
+								canExtendWithColor(chainColors, monster.color, state.config.grindstoneStreak) &&
 								!player.chain.includes(monster.id) &&
 								distance(player.position, monster.position) <= player.reach
 						)

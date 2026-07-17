@@ -19,7 +19,9 @@ export interface GameConfig {
 	minChain: number;
 	baseReach: number;
 	reachScale: number;
+	reachScoreScale: number;
 	scoreScale: number;
+	grindstoneStreak: number;
 	baseHealth: number;
 	healthScale: number;
 	bankHealingPerValue: number;

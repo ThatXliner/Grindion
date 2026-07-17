@@ -6,6 +6,7 @@
 		configureTutorialRoute,
 		createBotController,
 		createGame,
+		grindstoneState,
 		maxHealthForScore,
 		reachForScore,
 		stepGame
@@ -77,6 +78,7 @@
 		{ x: 1448, y: 235, width: 285, height: 220 },
 		{ x: 1740, y: 180, width: 300, height: 330 }
 	] as const;
+	const RAINBOW_COLORS = ['#ff665f', '#ffe36e', '#6be7ac', '#64dce5', '#c293e8'] as const;
 	const botController = createBotController(8_172);
 
 	const players = $derived(game ? Object.values(game.players) : []);
@@ -89,6 +91,7 @@
 	const power = $derived(Math.max(0, me?.power ?? 0));
 	const reach = $derived(me?.reach ?? reachForScore(me?.score ?? 0));
 	const chainLength = $derived(me?.chain.length ?? 0);
+	const grindstoneReady = $derived(me ? playerGrindstone(me).ready : false);
 	const secondsLeft = $derived(
 		Math.max(0, Math.ceil(((game?.roundEndsAtMs ?? 300_000) - (game?.timeMs ?? 0)) / 1000))
 	);
@@ -397,6 +400,37 @@
 		return '#f8f2d4';
 	}
 
+	function playerGrindstone(player: PlayerState) {
+		return grindstoneState(
+			player.chain
+				.map((id) => game?.arena.monsters[id]?.color)
+				.filter(Boolean) as Monster['color'][],
+			game?.config.grindstoneStreak ?? 5
+		);
+	}
+
+	function drawRainbowAura(
+		context: CanvasRenderingContext2D,
+		x: number,
+		y: number,
+		radius: number,
+		now: number
+	) {
+		const rotation = now * 0.004;
+		context.save();
+		context.lineWidth = 6;
+		context.shadowBlur = 12;
+		for (let index = 0; index < RAINBOW_COLORS.length; index++) {
+			const start = rotation + (index / RAINBOW_COLORS.length) * Math.PI * 2;
+			context.beginPath();
+			context.arc(x, y, radius, start, start + Math.PI * 0.34);
+			context.strokeStyle = RAINBOW_COLORS[index]!;
+			context.shadowColor = RAINBOW_COLORS[index]!;
+			context.stroke();
+		}
+		context.restore();
+	}
+
 	function animatedPlayerPosition(player: PlayerState, now: number): Point {
 		const animation = chainAnimations.get(player.id);
 		if (!animation?.nodes.length) return player.position;
@@ -517,6 +551,10 @@
 			context.strokeStyle = '#4b2533';
 			context.lineWidth = 4;
 			context.stroke();
+			if (playerGrindstone(player).ready && linked.at(-1)) {
+				const endpoint = linked.at(-1)!.position;
+				drawRainbowAura(context, endpoint.x, endpoint.y, 31, now);
+			}
 		}
 
 		for (const monster of monsters) {
@@ -597,6 +635,8 @@
 			const local = player.id === humanId;
 			const playerMax = player.maxHealth ?? maxHealthForScore(player.score);
 			const healthRatio = Math.max(0, player.health / playerMax);
+			if (playerGrindstone(player).ready)
+				drawRainbowAura(context, visualPosition.x, visualPosition.y, local ? 40 : 34, now);
 			if (player.mode === 'parrying')
 				drawSprite(context, 5, visualPosition.x, visualPosition.y, 78);
 			drawSprite(context, 0, visualPosition.x, visualPosition.y, local ? 62 : 52);
@@ -784,7 +824,9 @@
 				{#if chainLength > 0}
 					<div class="chain-status">
 						<span>{chainLength}×</span>
-						{#if mode === 'tutorial' && tutorialStep === 0}
+						{#if grindstoneReady}
+							<strong>GRINDSTONE READY</strong><small>NEXT MONSTER MAY BE ANY COLOR</small>
+						{:else if mode === 'tutorial' && tutorialStep === 0}
 							<strong>KEEP DRAGGING</strong><small>CONNECT THE HIGHLIGHTED ROUTE</small>
 						{:else if mode === 'tutorial' && tutorialStep === 1}
 							<strong>RELEASE TO BANK SCORE</strong><small>YOU LAND ON THE LAST CREATURE</small>
@@ -875,6 +917,13 @@
 							<b>3</b>
 							<div>
 								<strong>COMMIT</strong><span>A shot spends all Power. A parry rewards timing.</span>
+							</div>
+						</li>
+						<li>
+							<b>4</b>
+							<div>
+								<strong>GRIND</strong><span>Chain 5 of one color to unlock one rainbow switch.</span
+								>
 							</div>
 						</li>
 					</ol>
