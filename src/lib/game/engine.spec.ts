@@ -62,7 +62,8 @@ describe('game engine', () => {
 
 	it('uses logarithmic growth and power handicap', () => {
 		expect(reachForScore(100)).toBeGreaterThan(reachForScore(0));
-		expect(reachForScore(10)).toBeCloseTo(161, 0);
+		expect(reachForScore(0)).toBe(180);
+		expect(reachForScore(10)).toBeCloseTo(188, 0);
 		expect(reachForScore(1000)).toBeCloseTo(269, 0);
 		expect(maxHealthForScore(1000) - maxHealthForScore(100)).toBeLessThan(
 			9 * (maxHealthForScore(100) - maxHealthForScore(0))

@@ -189,7 +189,8 @@ Consequences:
   strength.
 
 Reach uses a smaller, independent score scale so its early gains are immediately
-noticeable while its late-game result remains close to the original curve.
+noticeable. Its higher base gives new players useful opening route choice, while
+the lower multiplier keeps its late-game result close to the original curve.
 Health and Power efficiency retain their shared, slower growth scale. The Score
 advantage must stay noticeable but modest to avoid runaway snowballing.
 
