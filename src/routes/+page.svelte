@@ -45,7 +45,7 @@
 		},
 		{
 			title: 'Move + bank',
-			copy: 'Release—or press Numpad 5 / Enter—to claim Score and land on the final creature.',
+			copy: 'Release—or press 5, S, or Enter—to claim Score and land on the final creature.',
 			mobileCopy: 'Release to claim Score and land on the final creature.'
 		},
 		{
