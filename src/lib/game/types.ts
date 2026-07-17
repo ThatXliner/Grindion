@@ -16,7 +16,6 @@ export interface GameConfig {
 	monsterColumns: number;
 	monsterRefillMs: number;
 	playerRadius: number;
-	moveSpeed: number;
 	minChain: number;
 	baseReach: number;
 	reachScale: number;
@@ -61,7 +60,6 @@ export interface PlayerState {
 	isBot: boolean;
 	color: string;
 	position: Vec2;
-	moveInput: Vec2;
 	score: number;
 	health: number;
 	maxHealth: number;
@@ -106,7 +104,6 @@ interface IntentBase {
 	sequence?: number;
 }
 export type GameIntent =
-	| (IntentBase & { type: 'move'; direction: Vec2 })
 	| (IntentBase & { type: 'chain-start'; monsterId: EntityId })
 	| (IntentBase & { type: 'chain-extend'; monsterId: EntityId })
 	| (IntentBase & { type: 'chain-commit'; conversion: 'score' | 'power' })

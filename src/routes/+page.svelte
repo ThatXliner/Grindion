@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		createBotController,
 		createGame,
@@ -16,8 +15,8 @@
 	type GameMode = 'title' | 'arena' | 'tutorial';
 
 	const TUTORIAL_STEPS = [
-		{ title: 'Move', copy: 'Use WASD or the arrow keys to move around the cavern.' },
-		{ title: 'Bank a chain', copy: 'Drag through 3+ matching creatures, then release for Score.' },
+		{ title: 'Choose a route', copy: 'Drag through 3+ adjacent creatures of one color.' },
+		{ title: 'Move + bank', copy: 'Release to claim Score and land on the final creature.' },
 		{
 			title: 'Charge Power',
 			copy: 'Build another chain. Hold Shift as you release to convert it to Power.'
@@ -46,7 +45,6 @@
 	let eventFeed = $state<{ id: number; text: string; tone: string }[]>([]);
 	let eventId = 0;
 	let tutorialStep = $state(0);
-	let tutorialStartPosition: Point = { x: 0, y: 0 };
 	let tutorialShotAt = 0;
 	let camera = { x: 720, y: 450, viewWidth: 570 };
 	let spriteSheet: HTMLImageElement | null = null;
@@ -58,7 +56,6 @@
 		{ x: 1445, y: 220, width: 285, height: 250 },
 		{ x: 1725, y: 170, width: 300, height: 340 }
 	] as const;
-	const keys = new SvelteSet<string>();
 	const botController = createBotController(8_172);
 
 	const players = $derived(game ? Object.values(game.players) : []);
@@ -92,17 +89,17 @@
 		dummy.position = { x: 1080, y: 450 };
 		dummy.power = 120;
 		dummy.protectedUntilMs = Number.POSITIVE_INFINITY;
-		const cluster = Object.values(state.arena.monsters).slice(0, 12);
+		const cluster = Object.values(state.arena.monsters).slice(0, 9);
 		const colors = ['coral', 'cyan', 'gold'] as const;
 		for (const [index, monster] of cluster.entries()) {
-			const group = Math.floor(index / 4);
+			const group = Math.floor(index / 3);
 			monster.position = {
-				x: 590 + (index % 4) * 70,
-				y: 330 + group * 115
+				x: 665 + (index % 3) * 55,
+				y: 365 + group * 85
 			};
 			monster.color = colors[group]!;
 			monster.neighborIds = cluster
-				.filter((_, other) => Math.floor(other / 4) === group && Math.abs(other - index) === 1)
+				.filter((_, other) => Math.floor(other / 3) === group && Math.abs(other - index) === 1)
 				.map((item) => item.id);
 		}
 		return state;
@@ -127,7 +124,6 @@
 		);
 		humanId = 'human';
 		tutorialStep = 0;
-		tutorialStartPosition = { ...game.players.human!.position };
 		tutorialShotAt = 0;
 		startSession('tutorial');
 	}
@@ -205,17 +201,6 @@
 		if (game && isRunning) queuedIntents.push({ ...intent, playerId: humanId } as GameIntent);
 	}
 
-	function currentMove(): Point {
-		let x = 0;
-		let y = 0;
-		if (keys.has('a') || keys.has('arrowleft')) x--;
-		if (keys.has('d') || keys.has('arrowright')) x++;
-		if (keys.has('w') || keys.has('arrowup')) y--;
-		if (keys.has('s') || keys.has('arrowdown')) y++;
-		const length = Math.hypot(x, y) || 1;
-		return { x: x / length, y: y / length };
-	}
-
 	function viewport(rect: DOMRect) {
 		const viewWidth = camera.viewWidth;
 		const viewHeight = viewWidth * (rect.height / rect.width);
@@ -291,11 +276,6 @@
 	}
 
 	function onKeyDown(event: KeyboardEvent) {
-		const key = event.key.toLowerCase();
-		if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
-			keys.add(key);
-			event.preventDefault();
-		}
 		if (event.repeat) return;
 		if (event.code === 'Space') {
 			event.preventDefault();
@@ -309,7 +289,6 @@
 	}
 
 	function cancelControls() {
-		keys.clear();
 		isDragging = false;
 		isAiming = false;
 	}
@@ -504,7 +483,6 @@
 				while (accumulator >= 50) {
 					const intents = [...queuedIntents];
 					queuedIntents = [];
-					intents.push({ type: 'move', playerId: humanId, direction: currentMove() });
 					if (mode === 'arena') intents.push(...(botController.update?.(game) ?? []));
 					if (
 						mode === 'tutorial' &&
@@ -536,14 +514,7 @@
 						});
 						commitAfterTick = null;
 					}
-					if (
-						mode === 'tutorial' &&
-						tutorialStep === 0 &&
-						Math.hypot(
-							game.players.human!.position.x - tutorialStartPosition.x,
-							game.players.human!.position.y - tutorialStartPosition.y
-						) > 45
-					)
+					if (mode === 'tutorial' && tutorialStep === 0 && game.players.human!.chain.length >= 3)
 						tutorialStep = 1;
 					accumulator -= 50;
 				}
@@ -562,11 +533,7 @@
 	<meta name="description" content="A pixel-art multiplayer puzzle-combat prototype." />
 </svelte:head>
 
-<svelte:window
-	onkeydown={onKeyDown}
-	onkeyup={(event) => keys.delete(event.key.toLowerCase())}
-	onblur={cancelControls}
-/>
+<svelte:window onkeydown={onKeyDown} onblur={cancelControls} />
 
 <main class="shell">
 	<header class="topbar">
@@ -685,10 +652,9 @@
 				{/if}
 			</div>
 			<div class="quick-controls">
-				<span><kbd>WASD</kbd> MOVE</span><span><kbd>DRAG</kbd> CHAIN</span><span
-					><kbd>⇧ RELEASE</kbd> POWER</span
-				><span><kbd>HOLD RMB</kbd> AIM / SCOUT</span><span><kbd>RELEASE RMB</kbd> FIRE ALL</span
-				><span><kbd>SPACE</kbd> PARRY</span>
+				<span><kbd>DRAG</kbd> ROUTE + MOVE</span><span><kbd>⇧ RELEASE</kbd> POWER</span><span
+					><kbd>HOLD RMB</kbd> AIM / SCOUT</span
+				><span><kbd>RELEASE RMB</kbd> FIRE ALL</span><span><kbd>SPACE</kbd> PARRY</span>
 			</div>
 		</div>
 

@@ -23,10 +23,9 @@ more of the arena; releasing fires the player's entire Power reserve.
 
 | Input                                        | Action                                  |
 | -------------------------------------------- | --------------------------------------- |
-| WASD / arrows                                | Move                                    |
 | Left-drag through matching adjacent monsters | Build a chain                           |
-| Release                                      | Bank the chain as Score                 |
-| Shift + release                              | Convert the chain to Power              |
+| Release                                      | Move to the chain end and bank Score    |
+| Shift + release                              | Move to the chain end and gain Power    |
 | Hold right mouse                             | Aim and zoom out                        |
 | Release right mouse                          | Fire all stored Power toward the cursor |
 | Space                                        | Parry                                   |

@@ -128,14 +128,8 @@ export function createBotController(seed = 1): BotController {
 				const monster = nearestMonster(state, player);
 				if (!monster) continue;
 				if (distance(player.position, monster.position) <= player.reach) {
-					intents.push({ type: 'move', playerId: player.id, direction: { x: 0, y: 0 } });
 					intents.push({ type: 'chain-start', playerId: player.id, monsterId: monster.id });
-				} else
-					intents.push({
-						type: 'move',
-						playerId: player.id,
-						direction: directionTo(player.position, monster.position)
-					});
+				}
 			}
 			return intents;
 		},

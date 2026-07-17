@@ -47,7 +47,6 @@ function makePlayer(
 		isBot: setup.isBot ?? false,
 		color: setup.color ?? PLAYER_COLORS[index % PLAYER_COLORS.length]!,
 		position: spawnPosition(index, count, config),
-		moveInput: { x: 0, y: 0 },
 		score: 0,
 		health: maxHealth,
 		maxHealth,
@@ -102,8 +101,7 @@ function cloneState(state: GameState): GameState {
 
 function intentOrder(intent: GameIntent): number {
 	// Path edits arrive continuously between fixed ticks and must exist before a
-	// release/commit in that same tick. Actions then use their authoritative
-	// priority, followed by movement input.
+	// release/commit in that same tick. Actions then use their authoritative priority.
 	if (intent.type === 'chain-start' || intent.type === 'chain-extend') return 0;
 	if (intent.type === 'parry') return 1;
 	if (intent.type === 'chain-cancel') return 2;
@@ -183,7 +181,8 @@ function commitChain(
 	}
 	const ids = [...player.chain],
 		length = ids.length,
-		value = chainValue(length);
+		value = chainValue(length),
+		destination = { ...state.arena.monsters[ids[length - 1]!]!.position };
 	for (const id of ids) {
 		const monster = state.arena.monsters[id]!;
 		monster.alive = false;
@@ -203,6 +202,9 @@ function commitChain(
 			player.power + powerGain(length, player.score, state.config)
 		);
 	}
+	// Committing the route is the player's only locomotion. The server resolves
+	// the chain atomically and places the player on its final cell.
+	player.position = destination;
 	cancelChain(player);
 	events.push({ type: 'chain-committed', playerId: player.id, conversion, length, value });
 	for (const opponent of Object.values(state.players)) {
@@ -258,9 +260,6 @@ function processIntent(state: GameState, intent: GameIntent, events: GameEvent[]
 	const player = state.players[intent.playerId];
 	if (!player || state.roundEnded) return;
 	switch (intent.type) {
-		case 'move':
-			player.moveInput = normalize(intent.direction);
-			break;
 		case 'chain-start':
 			tryAddMonster(state, player, intent.monsterId, true);
 			break;
@@ -286,22 +285,6 @@ function updateModes(state: GameState): void {
 	for (const player of Object.values(state.players)) {
 		if (player.mode === 'parrying' && state.timeMs >= player.parryUntilMs) player.mode = 'neutral';
 		if (player.mode === 'hit' && state.timeMs >= player.hitUntilMs) player.mode = 'neutral';
-	}
-}
-
-function updateMovement(state: GameState, dtSeconds: number): void {
-	for (const player of Object.values(state.players)) {
-		if (player.mode === 'dead' || player.mode === 'hit' || player.chain.length) continue;
-		player.position.x = clamp(
-			player.position.x + player.moveInput.x * state.config.moveSpeed * dtSeconds,
-			state.config.playerRadius,
-			state.config.width - state.config.playerRadius
-		);
-		player.position.y = clamp(
-			player.position.y + player.moveInput.y * state.config.moveSpeed * dtSeconds,
-			state.config.playerRadius,
-			state.config.height - state.config.playerRadius
-		);
 	}
 }
 
@@ -393,7 +376,6 @@ function updateRespawnsAndMonsters(state: GameState, events: GameEvent[]): void 
 			player.health = player.maxHealth;
 			player.power = state.config.initialPower;
 			player.mode = 'neutral';
-			player.moveInput = { x: 0, y: 0 };
 			player.protectedUntilMs = state.timeMs + state.config.spawnProtectionMs;
 			events.push({ type: 'player-respawned', playerId: player.id });
 		}
@@ -420,7 +402,6 @@ export function stepGame(
 	state.timeMs += dtMs;
 	updateModes(state);
 	for (const intent of sortedIntents(intents)) processIntent(state, intent, events);
-	updateMovement(state, dtMs / 1000);
 	updateProjectiles(state, dtMs / 1000, events);
 	updateRespawnsAndMonsters(state, events);
 	if (!state.roundEnded && state.timeMs >= state.roundEndsAtMs) {

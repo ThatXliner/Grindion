@@ -9,7 +9,6 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = Object.freeze({
 	monsterColumns: 15,
 	monsterRefillMs: 1_250,
 	playerRadius: 16,
-	moveSpeed: 210,
 	minChain: 3,
 	baseReach: 150,
 	reachScale: 50,

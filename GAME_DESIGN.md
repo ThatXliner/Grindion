@@ -69,9 +69,10 @@ Initial tuning targets, not final commitments:
 - 5-minute prototype rounds
 - 20–40 players and 8–10 minute rounds as a later target
 
-Before the live arena, a fixed-seed tutorial teaches movement, Score chaining,
-Power chaining, aiming/firing, and parrying in a controlled training room. Its
-progression is driven by actual simulation events rather than timers.
+Before the live arena, a fixed-seed tutorial teaches chain-based traversal,
+Score chaining, Power chaining, aiming/firing, and parrying in a controlled
+training room. Its progression is driven by actual simulation events rather
+than timers.
 
 ## 4. Player state
 
@@ -94,8 +95,9 @@ player can attack or parry and when a recent attacker is defenseless.
 
 The arena places monsters on a square grid. Chains may move to any of the eight
 surrounding cells, including diagonals, matching the connection freedom of the
-original inspiration. Player movement, aiming, and projectile motion remain
-continuous and are not snapped to this grid.
+original inspiration. A committed chain is the player's only source of
+movement: the avatar traverses the chosen route and ends on its final cell.
+Aiming and projectile motion remain continuous and are not snapped to the grid.
 
 ### Building a chain
 
@@ -207,7 +209,7 @@ usually retains Power while the initiator has none.
 Chaining is intentionally vulnerable:
 
 - A player cannot shoot or parry while actively chaining.
-- The player may cancel the unfinished chain to regain full movement and defend.
+- The player may cancel the unfinished chain to remain in place and defend.
 - Cancelling forfeits all uncommitted chain value.
 - Being hit breaks the unfinished chain.
 
@@ -232,8 +234,8 @@ duration remain open tuning decisions.
 
 The control scheme is not final, but the action budget should remain small:
 
-- Move/position the player
-- Drag through monsters to construct a chain
+- Drag through monsters to construct both a route and a chain
+- Commit that route to move to its final cell
 - Commit the chain as Score or Power
 - Aim and fire all Power
 - Parry
@@ -255,7 +257,7 @@ HUD framing. Grindstone is a readability and presentation reference only; its
 characters, assets, UI symbols, and layouts must not be copied.
 
 Mobile and controller layouts must be considered before the control model is
-locked, especially if simultaneous movement, aiming, and parrying are expected.
+locked, especially for quick switching between routing, aiming, and parrying.
 
 ## 12. MVP scope
 
@@ -289,8 +291,8 @@ locked, especially if simultaneous movement, aiming, and parrying are expected.
 - Long-term metagame progression
 - Ranked matchmaking
 
-Dashing should only return if playtesting shows that ordinary movement lacks a
-necessary escape or engagement tool.
+Dashing should only return if playtesting shows that chain-based traversal lacks
+a necessary escape or engagement tool.
 
 ## 13. Technical architecture
 
@@ -300,8 +302,8 @@ server-authoritative regardless of implementation technology.
 ### Client responsibilities
 
 - Render the board, players, chains, projectiles, and effects.
-- Capture movement, chain, conversion, fire, parry, and cancel intents.
-- Predict local chain highlighting and responsive movement where safe.
+- Capture chain, conversion, fire, parry, and cancel intents.
+- Predict local chain highlighting and committed-route traversal where safe.
 - Interpolate remote players and server-owned projectiles.
 - Display Score, health, Power, chain value, leaderboard, and threat cues.
 - Reconcile predicted state with authoritative server results.
@@ -309,7 +311,7 @@ server-authoritative regardless of implementation technology.
 ### Server responsibilities
 
 - Own the canonical match clock and simulation state.
-- Validate player movement and Reach.
+- Derive player movement exclusively from validated chain commits and Reach.
 - Validate chain adjacency, color, and monster availability.
 - Resolve chain commits atomically and truncate conflicting provisional chains.
 - Convert chains into Score or Power using shared tuning formulas.
@@ -366,7 +368,6 @@ shared
 Clients should send compact intentions rather than arbitrary state updates:
 
 ```text
-MoveInput
 StartChain
 ExtendChain(monsterId)
 CommitChain(Score | Power)
@@ -383,7 +384,7 @@ died, and player respawned.
 
 - Begin with a fixed server simulation tick, likely 20–30 Hz.
 - Snapshot frequency can be lower if clients interpolate movement smoothly.
-- Local movement and provisional chain selection should feel immediate.
+- Provisional chain selection and committed-route traversal should feel immediate.
 - Chain ownership, hits, parries, Score, Power, and health require server
   confirmation.
 - The parry window may need latency compensation with a strict maximum rewind
@@ -412,7 +413,7 @@ These should be resolved through the implementation plan or early prototypes:
 
 - Engine/platform and networking stack
 - Square-grid density and spacing
-- Exact movement model and camera perspective
+- Chain traversal timing, animation, and camera behavior
 - Exact Score-versus-Power commit controls
 - Chain scoring curve and combo bonuses
 - Growth, handicap, healing, and damage constants

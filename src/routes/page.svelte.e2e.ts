@@ -25,6 +25,6 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 	await page.goto('/');
 	await page.getByRole('button', { name: 'PLAY TUTORIAL ▶' }).click();
 	await expect(page.getByText('LESSON 1 / 6')).toBeVisible();
-	await expect(page.getByRole('heading', { name: 'Move' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Choose a route' })).toBeVisible();
 	await expect(page.getByText('2 ACTIVE')).toBeVisible();
 });
