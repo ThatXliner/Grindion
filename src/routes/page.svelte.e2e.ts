@@ -32,7 +32,7 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 	await expect(page.locator('.player-hud')).toHaveCount(0);
 	await expect(page.locator('.side-panel')).toHaveCount(0);
 	await expect(page.locator('.quick-controls')).toHaveCount(0);
-	await expect(page.getByText(/Press on your hero/)).toBeVisible();
+	await expect(page.getByText(/Press and hold on your hero/)).toBeVisible();
 
 	const canvas = page.locator('canvas');
 	const box = await canvas.boundingBox();

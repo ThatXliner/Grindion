@@ -28,7 +28,7 @@
 	const TUTORIAL_STEPS = [
 		{
 			title: 'Choose a route',
-			copy: 'Press on your hero, then drag into the cyan-outlined coral and follow the route.'
+			copy: 'Press and hold on your hero—not a monster—then drag into the cyan-outlined coral.'
 		},
 		{ title: 'Move + bank', copy: 'Release to claim Score and land on the final creature.' },
 		{
@@ -57,6 +57,8 @@
 	let isRunning = $state(false);
 	let isDragging = $state(false);
 	let isAiming = $state(false);
+	let pointerOverPlayer = $state(false);
+	let hasCommittedChain = $state(false);
 	let pointerWorld = $state<Point>({ x: 720, y: 450 });
 	let latestChainMonster = '';
 	let commitAfterTick: 'score' | 'power' | null = null;
@@ -174,6 +176,8 @@
 		isRunning = true;
 		isDragging = false;
 		isAiming = false;
+		pointerOverPlayer = false;
+		hasCommittedChain = false;
 		chainAnimations.clear();
 		if (game) {
 			const position = game.players[humanId]?.position ?? { x: 720, y: 450 };
@@ -183,6 +187,7 @@
 
 	function addEvent(event: GameEvent) {
 		if (event.type === 'chain-committed' && game) {
+			if (event.playerId === humanId) hasCommittedChain = true;
 			const nodes = event.monsterIds
 				.map((id) => game?.arena.monsters[id])
 				.filter(Boolean)
@@ -315,6 +320,11 @@
 	function onPointerMove(event: PointerEvent) {
 		if (mode === 'title') return;
 		pointerWorld = canvasPoint(event);
+		pointerOverPlayer = Boolean(
+			me &&
+			Math.hypot(pointerWorld.x - me.position.x, pointerWorld.y - me.position.y) <=
+				Math.max(38, (game?.config.playerRadius ?? 18) * 2)
+		);
 		if (!isDragging) return;
 		const monster = nearestMonster(pointerWorld);
 		if (monster && monster.id !== latestChainMonster) {
@@ -361,6 +371,7 @@
 	function cancelControls() {
 		isDragging = false;
 		isAiming = false;
+		pointerOverPlayer = false;
 	}
 
 	function spriteIndex(color: string | undefined) {
@@ -428,6 +439,40 @@
 			context.shadowColor = RAINBOW_COLORS[index]!;
 			context.stroke();
 		}
+		context.restore();
+	}
+
+	function drawChainStartCue(context: CanvasRenderingContext2D, position: Point, now: number) {
+		const pulse = 42 + Math.sin(now * 0.008) * 5;
+		context.save();
+		context.strokeStyle = '#64dce5';
+		context.fillStyle = 'rgba(100,220,229,.1)';
+		context.lineWidth = 4;
+		context.setLineDash([7, 5]);
+		context.beginPath();
+		context.arc(position.x, position.y, pulse, 0, Math.PI * 2);
+		context.fill();
+		context.stroke();
+		context.setLineDash([]);
+
+		const label = 'HOLD + DRAG FROM HERO';
+		context.font = '900 9px monospace';
+		context.textAlign = 'center';
+		context.textBaseline = 'middle';
+		context.fillStyle = '#10202a';
+		context.fillRect(position.x - 66, position.y + 56, 132, 22);
+		context.strokeStyle = '#64dce5';
+		context.lineWidth = 2;
+		context.strokeRect(position.x - 66, position.y + 56, 132, 22);
+		context.fillStyle = '#dffcff';
+		context.fillText(label, position.x, position.y + 67);
+		context.beginPath();
+		context.moveTo(position.x - 5, position.y + 52);
+		context.lineTo(position.x + 5, position.y + 52);
+		context.lineTo(position.x, position.y + 45);
+		context.closePath();
+		context.fillStyle = '#64dce5';
+		context.fill();
 		context.restore();
 	}
 
@@ -645,6 +690,8 @@
 			context.fillStyle =
 				healthRatio > 0.35 ? (local ? '#ffe36e' : colorFor(player.color)) : '#ff665f';
 			context.fillRect(visualPosition.x - 25, visualPosition.y - 40, 50 * healthRatio, 3);
+			if (local && !hasCommittedChain && !isDragging && !player.chain.length && mode !== 'title')
+				drawChainStartCue(context, visualPosition, now);
 		}
 
 		if (isAiming && me) {
@@ -768,6 +815,7 @@
 			<div
 				class:dragging={isDragging}
 				class:aiming={isAiming}
+				class:player-hover={pointerOverPlayer}
 				class="arena-frame"
 				role="application"
 				aria-label="Grindion game arena"
@@ -874,10 +922,10 @@
 			</div>
 			{#if mode !== 'tutorial'}
 				<div class="quick-controls">
-					<span><kbd>DRAG</kbd> ROUTE + MOVE</span><span><kbd>⇧ RELEASE</kbd> POWER</span><span
-						><kbd>DRAG BACK</kbd> SHORTEN ROUTE</span
-					><span><kbd>HOLD RMB</kbd> AIM / SCOUT</span><span><kbd>RELEASE RMB</kbd> FIRE ALL</span
-					><span><kbd>SPACE</kbd> PARRY</span>
+					<span><kbd>DRAG FROM HERO</kbd> ROUTE + MOVE</span><span><kbd>⇧ RELEASE</kbd> POWER</span
+					><span><kbd>DRAG BACK</kbd> SHORTEN ROUTE</span><span
+						><kbd>HOLD RMB</kbd> AIM / SCOUT</span
+					><span><kbd>RELEASE RMB</kbd> FIRE ALL</span><span><kbd>SPACE</kbd> PARRY</span>
 				</div>
 			{/if}
 		</div>
@@ -1063,6 +1111,9 @@
 		cursor: crosshair;
 		touch-action: none;
 		image-rendering: pixelated;
+	}
+	.player-hover canvas {
+		cursor: grab;
 	}
 	.dragging canvas {
 		cursor: grabbing;
