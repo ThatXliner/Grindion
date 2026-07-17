@@ -19,6 +19,7 @@ export {
 	powerGain
 } from './tuning';
 export { arenaGridMetrics, distance, normalize } from './arena';
+export { configureTutorialRoute } from './tutorial';
 export type {
 	Arena,
 	CreateGameOptions,

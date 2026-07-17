@@ -2,20 +2,14 @@
 	import { onMount } from 'svelte';
 	import {
 		arenaGridMetrics,
+		configureTutorialRoute,
 		createBotController,
 		createGame,
 		maxHealthForScore,
 		reachForScore,
 		stepGame
 	} from '$lib/game';
-	import type {
-		GameEvent,
-		GameIntent,
-		GameState,
-		Monster,
-		MonsterColor,
-		PlayerState
-	} from '$lib/game';
+	import type { GameEvent, GameIntent, GameState, Monster, PlayerState } from '$lib/game';
 
 	type Point = { x: number; y: number };
 	type WithoutPlayer<T> = T extends { playerId: string } ? Omit<T, 'playerId'> : never;
@@ -93,56 +87,8 @@
 			.map((player, index) => ({ ...player, rank: index + 1 }))
 	);
 
-	function stageTutorialRoute(
-		state: GameState,
-		color: Exclude<MonsterColor, 'gold'>,
-		preferredIds?: string[]
-	) {
-		const human = state.players.human!;
-		const alive = Object.values(state.arena.monsters).filter((monster) => monster.alive);
-		for (const monster of alive) monster.color = 'gold';
-		const origin = state.arena.monsters[human.cellId];
-		const withinReach = (monster: Monster) =>
-			Math.hypot(monster.position.x - human.position.x, monster.position.y - human.position.y) <=
-			human.reach;
-		let route = (preferredIds ?? [])
-			.map((id) => state.arena.monsters[id])
-			.filter((monster): monster is Monster => Boolean(monster?.alive && withinReach(monster)));
-		if (
-			route.length !== 3 ||
-			!origin?.neighborIds.includes(route[0]!.id) ||
-			!route[0]!.neighborIds.includes(route[1]!.id) ||
-			!route[1]!.neighborIds.includes(route[2]!.id)
-		)
-			route = [];
-		if (route.length < 3) {
-			route = [];
-			const candidates = (origin?.neighborIds ?? [])
-				.map((id) => state.arena.monsters[id]!)
-				.filter((monster) => monster.alive && withinReach(monster))
-				.sort(
-					(a, b) =>
-						Math.hypot(a.position.x - human.position.x, a.position.y - human.position.y) -
-							Math.hypot(b.position.x - human.position.x, b.position.y - human.position.y) ||
-						a.id.localeCompare(b.id)
-				);
-			for (const first of candidates) {
-				for (const secondId of first.neighborIds) {
-					const second = state.arena.monsters[secondId];
-					if (!second?.alive || !withinReach(second)) continue;
-					const third = second.neighborIds
-						.map((id) => state.arena.monsters[id])
-						.find((monster) => monster?.alive && monster.id !== first.id && withinReach(monster));
-					if (third) {
-						route = [first, second, third];
-						break;
-					}
-				}
-				if (route.length === 3) break;
-			}
-		}
-		for (const monster of route) monster.color = color;
-		tutorialRouteIds = route.map((monster) => monster.id);
+	function stageTutorialRoute(state: GameState, color: 'coral' | 'cyan', preferredIds?: string[]) {
+		tutorialRouteIds = configureTutorialRoute(state, 'human', color, preferredIds);
 	}
 
 	function prepareTutorial(state: GameState) {
