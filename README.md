@@ -51,7 +51,7 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite, then start with **Play Tutorial** or jump directly into **Enter Arena**. Supabase is optional; the full prototype works without it.
+Open the local URL printed by Vite, then start with **Play Tutorial** or jump directly into **Solo Arena**. Supabase is optional; the full prototype works without it.
 
 ## Controls
 
@@ -64,6 +64,7 @@ Open the local URL printed by Vite, then start with **Play Tutorial** or jump di
 | Release <kbd>Right mouse</kbd>                                         | Fire every point of stored Power                    |
 | <kbd>Space</kbd>                                                       | Parry an incoming projectile                        |
 | <kbd>Escape</kbd>                                                      | Cancel the active chain                             |
+| <kbd>?</kbd> or <kbd>H</kbd>                                           | Show every control and the rules in-game            |
 
 ### The loop in 20 seconds
 
@@ -98,7 +99,8 @@ src/
 ├── lib/server/            server-owned arenas, bot seats, round lifecycle
 ├── lib/online/            browser WebSocket client
 ├── lib/supabase/          browser client + Presence/Broadcast room protocol
-└── routes/+page.svelte    canvas renderer, HUD, input, tutorial presentation
+├── lib/render/            canvas renderer, cavern floor, particles, hit feedback
+└── routes/+page.svelte    HUD, title screen, input, tutorial presentation
 
 static/assets/             banner and original pixel-art sprite sheets
 supabase/migrations/       match metadata schema and RLS policies

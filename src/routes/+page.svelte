@@ -4,25 +4,27 @@
 	import { ArenaClient } from '$lib/online/arenaClient';
 	import { SvelteMap } from 'svelte/reactivity';
 	import {
-		arenaGridMetrics,
 		canExtendWithColor,
+		chainValue,
 		configureTutorialRoute,
 		createBotController,
 		createChainMotionTiming,
 		createGame,
 		grindstoneState,
 		maxHealthForScore,
-		sampleChainMotion,
+		powerGain,
 		stepGame
 	} from '$lib/game';
-	import type {
-		ChainMotionTiming,
-		GameEvent,
-		GameIntent,
-		GameState,
-		Monster,
-		PlayerState
-	} from '$lib/game';
+	import type { GameEvent, GameIntent, GameState, Monster, PlayerState } from '$lib/game';
+	import {
+		animatedPlayerPosition,
+		ArenaRenderer,
+		PALETTE,
+		playerColor,
+		SPRITE,
+		SPRITE_FRAMES
+	} from '$lib/render/arenaRenderer';
+	import type { Camera, ChainAnimation, Point } from '$lib/render/arenaRenderer';
 	import { getSupabaseBrowserClient, isSupabaseConfigured } from '$lib/supabase/client';
 	import {
 		cleanPlayerName,
@@ -33,19 +35,12 @@
 	} from '$lib/supabase/realtimeRoom';
 	import type { RoomConnectionState, RoomMember, RoomRole } from '$lib/supabase/realtimeRoom';
 
-	type Point = { x: number; y: number };
-	type ChainAnimation = {
-		playerId: string;
-		origin: Point;
-		nodes: { id: string; position: Point; color: Monster['color'] }[];
-		startedAt: number;
-		timing: ChainMotionTiming;
-	};
 	type WithoutPlayer<T> = T extends { playerId: string } ? Omit<T, 'playerId'> : never;
 	type HumanIntent = WithoutPlayer<GameIntent>;
 	type GameMode = 'title' | 'arena' | 'tutorial';
 	type DeathRecap = { killerName: string; scoreLost: number };
 	type LobbyStatus = 'idle' | 'connecting' | 'lobby';
+	type FeedTone = 'gold' | 'energy' | 'coral' | 'violet' | 'neutral';
 
 	const TUTORIAL_STEPS = [
 		{
@@ -75,12 +70,35 @@
 		},
 		{
 			title: 'Parry',
-			copy: 'The dummy is firing. Press Space just before the shot reaches you.',
-			mobileCopy: 'The dummy is firing. Tap Parry just before the shot reaches you.'
+			copy: 'The dummy is firing. Press Space when the warning ring turns cyan.',
+			mobileCopy: 'The dummy is firing. Tap Parry when the warning ring turns cyan.'
 		},
 		{
 			title: 'Training complete',
 			copy: 'You know the loop. Enter the live arena when you are ready.'
+		}
+	] as const;
+
+	const HOW_TO_PLAY = [
+		{
+			sprite: SPRITE.coral,
+			title: 'Chain',
+			copy: 'Drag from your hero through matching neighbors. The route is how you move.'
+		},
+		{
+			sprite: SPRITE.gold,
+			title: 'Choose',
+			copy: 'Release to bank Score and grow tougher, or right-drag to store the chain as Power.'
+		},
+		{
+			sprite: SPRITE.bolt,
+			title: 'Commit',
+			copy: 'A shot spends all your Power. A well-timed parry stops any shot.'
+		},
+		{
+			sprite: SPRITE.cyan,
+			title: 'Grind',
+			copy: 'Chain 5 of one color to unlock one rainbow switch to any neighbor.'
 		}
 	] as const;
 
@@ -100,11 +118,13 @@
 	let mobileConversion = $state<'score' | 'power'>('score');
 	let deathRecap = $state<DeathRecap | null>(null);
 	let pointerWorld = $state<Point>({ x: 720, y: 450 });
+	let showHelp = $state(false);
+	let showStandings = $state(false);
 	let latestChainMonster = '';
 	let optimisticChainIds: string[] = [];
 	let previousDragPoint: Point | null = null;
 	let commitAfterTick: 'score' | 'power' | null = null;
-	let eventFeed = $state<{ id: number; text: string; tone: string }[]>([]);
+	let eventFeed = $state<{ id: number; text: string; tone: FeedTone }[]>([]);
 	let eventId = 0;
 	let tutorialStep = $state(0);
 	let tutorialShotAt = 0;
@@ -125,10 +145,13 @@
 	let remoteIntents: GameIntent[] = [];
 	let pendingNetworkEvents: GameEvent[] = [];
 	let lastPublishedTimeMs = -Infinity;
-	const NORMAL_VIEW_WIDTH = 570;
-	const AIM_VIEW_WIDTH = 680;
+	// World units visible across the short axis of the screen.
+	const DESKTOP_VIEW = 1080;
+	const DESKTOP_AIM_VIEW = 1280;
+	const TITLE_VIEW = 1100;
 	const MOBILE_VIEW_WIDTH = 460;
 	const MOBILE_AIM_VIEW_WIDTH = 590;
+	const CAMERA_EDGE_PADDING = 70;
 	const NUMPAD_DIRECTIONS: Record<string, Point> = {
 		Numpad7: { x: -1, y: -1 },
 		Numpad8: { x: 0, y: -1 },
@@ -185,27 +208,20 @@
 		PageDown: { x: 1, y: 1 }
 	};
 	const chainAnimations = new SvelteMap<string, ChainAnimation>();
-	let camera = { x: 720, y: 450, viewWidth: NORMAL_VIEW_WIDTH };
-	let spriteSheet: HTMLImageElement | null = null;
-	const SPRITE_FRAMES = [
-		{ x: 55, y: 185, width: 305, height: 315 },
-		{ x: 414, y: 180, width: 300, height: 315 },
-		{ x: 760, y: 185, width: 320, height: 305 },
-		{ x: 1165, y: 185, width: 230, height: 310 },
-		{ x: 1448, y: 235, width: 285, height: 220 },
-		{ x: 1740, y: 180, width: 300, height: 330 }
-	] as const;
-	const RAINBOW_COLORS = ['#ff665f', '#ffe36e', '#6be7ac', '#64dce5', '#c293e8'] as const;
+	let camera: Camera = { x: 720, y: 450, scale: 1 };
+	const renderer = new ArenaRenderer();
 	const botController = createBotController(8_172);
+	const attractBots = createBotController(0x41545452);
 
 	const players = $derived(game ? Object.values(game.players) : []);
 	const monsters = $derived(game ? Object.values(game.arena.monsters) : []);
-	const projectiles = $derived(game ? Object.values(game.projectiles) : []);
 	const me = $derived(players.find((player) => player.id === humanId) ?? players[0]);
 	const score = $derived(Math.round(me?.score ?? 0));
 	const maxHealth = $derived(me?.maxHealth ?? maxHealthForScore(me?.score ?? 0));
 	const health = $derived(Math.max(0, me?.health ?? maxHealth));
 	const power = $derived(Math.max(0, me?.power ?? 0));
+	const powerCap = $derived(game?.config.powerCap ?? 120);
+	const minFirePower = $derived(game?.config.minFirePower ?? 10);
 	const chainLength = $derived(me?.chain.length ?? 0);
 	const isDead = $derived(me?.mode === 'dead');
 	const respawnRemainingMs = $derived(
@@ -222,11 +238,27 @@
 	const timerText = $derived(
 		`${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')}`
 	);
-	const leaderboard: (PlayerState & { rank: number })[] = $derived(
+	const standings: (PlayerState & { rank: number })[] = $derived(
 		[...players]
 			.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-			.slice(0, 8)
 			.map((player, index) => ({ ...player, rank: index + 1 }))
+	);
+	const leaderboard = $derived(standings.slice(0, 8));
+	const myRank = $derived(standings.find((player) => player.id === humanId)?.rank ?? 0);
+	const statusText = $derived(
+		serverArena
+			? isRunning
+				? 'ARENA SERVER LIVE'
+				: 'REJOIN ARENA'
+			: lobbyRole && mode === 'arena'
+				? isRunning
+					? lobbyRole === 'host'
+						? 'NETWORK HOST LIVE'
+						: 'SYNCED TO HOST'
+					: 'NETWORK ROUND ENDED'
+				: isRunning
+					? 'SIMULATION LIVE'
+					: 'CAVERN READY'
 	);
 
 	function stageTutorialRoute(state: GameState, color: 'coral' | 'cyan', preferredIds?: string[]) {
@@ -268,10 +300,33 @@
 		return state;
 	}
 
-	function startArena() {
+	/** A bot-only match that plays behind the title screen. */
+	function startAttract() {
+		game = createGame({
+			seed: Math.floor(Math.random() * 2 ** 30),
+			players: Array.from({ length: 8 }, (_, index) => ({
+				id: `bot-${index + 1}`,
+				name: `Bot ${index + 1}`,
+				isBot: true
+			})),
+			config: { roundDurationMs: 3_600_000 }
+		});
+		humanId = '';
+		attractBots.reset();
+		renderer.reset();
+		chainAnimations.clear();
+		camera = { x: game.arena.width / 2, y: game.arena.height / 2, scale: camera.scale };
+	}
+
+	function startArena(roundDurationMs?: number) {
 		lobbyRole = null;
-		game = createGame({ seed: Math.floor(Math.random() * 2 ** 30), botCount: 7 });
+		game = createGame({
+			seed: Math.floor(Math.random() * 2 ** 30),
+			botCount: 7,
+			config: roundDurationMs ? { roundDurationMs } : {}
+		});
 		humanId = Object.values(game.players).find((player) => !player.isBot)?.id ?? 'player';
+		botController.reset();
 		startSession('arena');
 	}
 
@@ -294,7 +349,7 @@
 	}
 
 	function acceptRemoteSnapshot(state: GameState, events: GameEvent[]) {
-		if (!game || state.tick < game.tick) return;
+		if (mode === 'title' || !game || state.tick < game.tick) return;
 		game = state;
 		for (const event of events) addEvent(event);
 		if (state.roundEnded || state.timeMs >= state.roundEndsAtMs) isRunning = false;
@@ -435,6 +490,21 @@
 		}
 	}
 
+	async function exitToTitle() {
+		showHelp = false;
+		showStandings = false;
+		cancelControls();
+		if (serverArena || multiplayerRoom) {
+			await leaveRoom();
+			return;
+		}
+		lobbyRole = null;
+		deathRecap = null;
+		isRunning = false;
+		mode = 'title';
+		game = null;
+	}
+
 	async function startMultiplayerMatch() {
 		if (!multiplayerRoom || lobbyRole !== 'host' || !lobbyMembers.length) return;
 		const seed = Math.floor(Math.random() * 2 ** 30);
@@ -498,19 +568,44 @@
 		mobileAimArmed = false;
 		mobileConversion = 'score';
 		deathRecap = null;
+		showHelp = false;
+		showStandings = false;
+		optimisticChainIds = [];
 		chainAnimations.clear();
+		renderer.reset();
 		if (game) {
 			const position = game.players[humanId]?.position ?? { x: 720, y: 450 };
-			camera = { ...position, viewWidth: desiredViewWidth(false) };
+			const scale = canvas ? desiredScale(canvas.getBoundingClientRect(), false) : camera.scale;
+			camera = { ...clampCamera(position, scale, canvas?.getBoundingClientRect()), scale };
 		}
 	}
 
-	function desiredViewWidth(aiming = isAiming) {
-		if (useTouchControls) return aiming ? MOBILE_AIM_VIEW_WIDTH : MOBILE_VIEW_WIDTH;
-		return aiming ? AIM_VIEW_WIDTH : NORMAL_VIEW_WIDTH;
+	function desiredScale(rect: DOMRect, aiming = isAiming) {
+		if (!rect.width || !rect.height) return 1;
+		if (mode === 'title') return Math.min(rect.width, rect.height * 1.6) / TITLE_VIEW;
+		if (useTouchControls)
+			return (
+				Math.min(rect.width, rect.height * 1.2) /
+				(aiming ? MOBILE_AIM_VIEW_WIDTH : MOBILE_VIEW_WIDTH)
+			);
+		return Math.min(rect.width, rect.height * 1.6) / (aiming ? DESKTOP_AIM_VIEW : DESKTOP_VIEW);
+	}
+
+	function clampCamera(target: Point, scale: number, rect: DOMRect | undefined): Point {
+		if (!game || !rect) return target;
+		const clampAxis = (value: number, view: number, size: number) => {
+			const min = view / 2 - CAMERA_EDGE_PADDING;
+			const max = size - view / 2 + CAMERA_EDGE_PADDING;
+			return min > max ? size / 2 : Math.max(min, Math.min(max, value));
+		};
+		return {
+			x: clampAxis(target.x, rect.width / scale, game.arena.width),
+			y: clampAxis(target.y, rect.height / scale, game.arena.height)
+		};
 	}
 
 	function addEvent(event: GameEvent) {
+		if (game) renderer.handleEvent(event, game, humanId);
 		if (event.type === 'chain-committed' && game) {
 			if (event.playerId === humanId) hasCommittedChain = true;
 			const nodes = event.monsterIds
@@ -532,21 +627,23 @@
 			}
 		}
 		let text = '';
-		let tone = 'neutral';
+		let tone: FeedTone = 'neutral';
 		if (event.type === 'projectile-parried') {
-			text = 'PERFECT PARRY';
-			tone = 'cyan';
+			text = event.playerId === humanId ? 'PERFECT PARRY' : 'SHOT PARRIED';
+			tone = 'energy';
 		} else if (event.type === 'projectile-fired' && event.playerId === humanId) {
 			text = 'POWER COMMITTED';
 			tone = 'coral';
 		} else if (event.type === 'player-died') {
-			text = 'PLAYER SHATTERED';
+			const victim = event.playerId === humanId ? 'YOU' : game?.players[event.playerId]?.name;
+			const killer = event.byPlayerId === humanId ? 'YOU' : game?.players[event.byPlayerId]?.name;
+			text = `${killer ?? 'A RIVAL'} SHATTERED ${victim ?? 'A RIVAL'}`;
 			tone = 'coral';
 		} else if (event.type === 'chain-committed' && event.playerId === humanId) {
 			text = event.conversion === 'power' ? 'CHAIN → POWER' : 'CHAIN BANKED';
-			tone = event.conversion === 'power' ? 'violet' : 'acid';
+			tone = event.conversion === 'power' ? 'violet' : 'gold';
 		}
-		if (text) eventFeed = [{ id: eventId++, text, tone }, ...eventFeed].slice(0, 3);
+		if (text) addFeedMessage(text, tone);
 		if (event.type === 'player-died' && event.playerId === humanId) {
 			deathRecap = {
 				killerName: game?.players[event.byPlayerId]?.name ?? 'Unknown rival',
@@ -559,7 +656,7 @@
 			deathRecap = null;
 			addFeedMessage(
 				`REDEPLOYED · ${Math.ceil((game?.config.spawnProtectionMs ?? 0) / 1000)}S SHIELD`,
-				'cyan'
+				'energy'
 			);
 		}
 
@@ -612,8 +709,8 @@
 			tutorialStep = 6;
 	}
 
-	function addFeedMessage(text: string, tone: string) {
-		eventFeed = [{ id: eventId++, text, tone }, ...eventFeed].slice(0, 3);
+	function addFeedMessage(text: string, tone: FeedTone) {
+		eventFeed = [{ id: eventId++, text, tone }, ...eventFeed].slice(0, 4);
 	}
 
 	let queuedIntents: GameIntent[] = [];
@@ -625,18 +722,11 @@
 		else queuedIntents.push(gameIntent);
 	}
 
-	function viewport(rect: DOMRect) {
-		const viewWidth = camera.viewWidth;
-		const viewHeight = viewWidth * (rect.height / rect.width);
-		return { viewWidth, viewHeight, scale: rect.width / viewWidth };
-	}
-
 	function canvasPoint(event: PointerEvent): Point {
 		const rect = canvas.getBoundingClientRect();
-		const view = viewport(rect);
 		return {
-			x: camera.x + (event.clientX - rect.left - rect.width / 2) / view.scale,
-			y: camera.y + (event.clientY - rect.top - rect.height / 2) / view.scale
+			x: camera.x + (event.clientX - rect.left - rect.width / 2) / camera.scale,
+			y: camera.y + (event.clientY - rect.top - rect.height / 2) / camera.scale
 		};
 	}
 
@@ -675,6 +765,38 @@
 			previous?.neighborIds.includes(monster.id) &&
 			canExtendWithColor(colors, monster.color, game.config.grindstoneStreak)
 		);
+	}
+
+	/** Monsters the local player could add next, for on-board highlighting. */
+	function legalTargetIds(): Set<string> {
+		const ids: string[] = [];
+		if (!game || !me || mode === 'title' || isDead || isAiming) return new Set(ids);
+		const chain = optimisticChainIds.length ? optimisticChainIds : me.chain;
+		if (!chain.length && !isDragging) return new Set(ids);
+		const source = game.arena.monsters[chain.at(-1) ?? me.cellId];
+		const colors = chain
+			.map((id) => game?.arena.monsters[id]?.color)
+			.filter(Boolean) as Monster['color'][];
+		for (const id of source?.neighborIds ?? []) {
+			const monster = game.arena.monsters[id];
+			if (!monster?.alive || chain.includes(id)) continue;
+			if (!chain.length || canExtendWithColor(colors, monster.color, game.config.grindstoneStreak))
+				ids.push(id);
+		}
+		return new Set(ids);
+	}
+
+	function chainPreview() {
+		if (!game || !me || !me.chain.length || mode === 'title') return null;
+		const length = me.chain.length;
+		if (length < game.config.minChain)
+			return { text: `${length}/${game.config.minChain} TO COMMIT`, color: '#c9bde6' };
+		const conversion = useTouchControls ? mobileConversion : isDragging ? dragConversion : null;
+		const scoreGain = chainValue(length);
+		const powerGained = powerGain(length, me.score, game.config);
+		if (conversion === 'score') return { text: `+${scoreGain} SCORE`, color: PALETTE.gold };
+		if (conversion === 'power') return { text: `+${powerGained} POWER`, color: PALETTE.energy };
+		return { text: `+${scoreGain} SCORE · +${powerGained} PWR`, color: PALETTE.parchment };
 	}
 
 	function chainTargetsAlong(start: Point, end: Point) {
@@ -778,6 +900,7 @@
 			return;
 		}
 		latestChainMonster = '';
+		optimisticChainIds = [];
 		const conversion = event.shiftKey ? 'power' : dragConversion;
 		if (lobbyRole === 'guest') dispatch({ type: 'chain-commit', conversion });
 		else commitAfterTick = conversion;
@@ -836,6 +959,15 @@
 				event.preventDefault();
 				startArena();
 			}
+			return;
+		}
+		if (event.key === '?' || event.code === 'KeyH') {
+			event.preventDefault();
+			showHelp = !showHelp;
+			return;
+		}
+		if (showHelp && event.key === 'Escape') {
+			showHelp = false;
 			return;
 		}
 		const direction =
@@ -904,43 +1036,6 @@
 		previousDragPoint = null;
 	}
 
-	function spriteIndex(color: string | undefined) {
-		return color === 'coral' ? 1 : color === 'cyan' ? 2 : 3;
-	}
-
-	function drawSprite(
-		context: CanvasRenderingContext2D,
-		cell: number,
-		x: number,
-		y: number,
-		size: number
-	) {
-		if (!spriteSheet?.complete) return false;
-		const frame = SPRITE_FRAMES[cell];
-		if (!frame) return false;
-		context.imageSmoothingEnabled = false;
-		context.drawImage(
-			spriteSheet,
-			frame.x,
-			frame.y,
-			frame.width,
-			frame.height,
-			Math.round(x - size / 2),
-			Math.round(y - size / 2),
-			size,
-			size
-		);
-		return true;
-	}
-
-	function colorFor(value: string | undefined) {
-		if (value?.startsWith('#')) return value;
-		if (value === 'coral') return '#ff6b66';
-		if (value === 'cyan') return '#46d9e8';
-		if (value === 'gold') return '#ffe36e';
-		return '#f8f2d4';
-	}
-
 	function playerGrindstone(player: PlayerState) {
 		return grindstoneState(
 			player.chain
@@ -948,78 +1043,6 @@
 				.filter(Boolean) as Monster['color'][],
 			game?.config.grindstoneStreak ?? 5
 		);
-	}
-
-	function drawRainbowAura(
-		context: CanvasRenderingContext2D,
-		x: number,
-		y: number,
-		radius: number,
-		now: number
-	) {
-		const rotation = now * 0.004;
-		context.save();
-		context.lineWidth = 6;
-		context.shadowBlur = 12;
-		for (let index = 0; index < RAINBOW_COLORS.length; index++) {
-			const start = rotation + (index / RAINBOW_COLORS.length) * Math.PI * 2;
-			context.beginPath();
-			context.arc(x, y, radius, start, start + Math.PI * 0.34);
-			context.strokeStyle = RAINBOW_COLORS[index]!;
-			context.shadowColor = RAINBOW_COLORS[index]!;
-			context.stroke();
-		}
-		context.restore();
-	}
-
-	function drawChainStartCue(context: CanvasRenderingContext2D, position: Point, now: number) {
-		const pulse = 42 + Math.sin(now * 0.008) * 5;
-		context.save();
-		context.strokeStyle = '#64dce5';
-		context.fillStyle = 'rgba(100,220,229,.1)';
-		context.lineWidth = 4;
-		context.setLineDash([7, 5]);
-		context.beginPath();
-		context.arc(position.x, position.y, pulse, 0, Math.PI * 2);
-		context.fill();
-		context.stroke();
-		context.setLineDash([]);
-
-		const label = 'HOLD + DRAG FROM HERO';
-		context.font = '900 9px monospace';
-		context.textAlign = 'center';
-		context.textBaseline = 'middle';
-		context.fillStyle = '#10202a';
-		context.fillRect(position.x - 66, position.y + 56, 132, 22);
-		context.strokeStyle = '#64dce5';
-		context.lineWidth = 2;
-		context.strokeRect(position.x - 66, position.y + 56, 132, 22);
-		context.fillStyle = '#dffcff';
-		context.fillText(label, position.x, position.y + 67);
-		context.beginPath();
-		context.moveTo(position.x - 5, position.y + 52);
-		context.lineTo(position.x + 5, position.y + 52);
-		context.lineTo(position.x, position.y + 45);
-		context.closePath();
-		context.fillStyle = '#64dce5';
-		context.fill();
-		context.restore();
-	}
-
-	function animatedPlayerPosition(player: PlayerState, now: number): Point {
-		const animation = chainAnimations.get(player.id);
-		if (!animation?.nodes.length) return player.position;
-		const elapsed = Math.max(0, now - animation.startedAt);
-		const sample = sampleChainMotion(animation.timing, elapsed);
-		const segment = sample.segment;
-		const progress = sample.progress;
-		const eased = 1 - Math.pow(1 - progress, 3);
-		const from = segment === 0 ? animation.origin : animation.nodes[segment - 1]!.position;
-		const to = animation.nodes[segment]!.position;
-		return {
-			x: from.x + (to.x - from.x) * eased,
-			y: from.y + (to.y - from.y) * eased - Math.sin(progress * Math.PI) * 16
-		};
 	}
 
 	function draw(now: number) {
@@ -1035,197 +1058,54 @@
 		}
 		const context = canvas.getContext('2d');
 		if (!context) return;
-		context.setTransform(dpr, 0, 0, dpr, 0, 0);
-		context.clearRect(0, 0, rect.width, rect.height);
 		for (const [playerId, animation] of chainAnimations) {
 			if (now - animation.startedAt > animation.timing.totalMs + 220)
 				chainAnimations.delete(playerId);
 		}
-		camera.viewWidth += (desiredViewWidth() - camera.viewWidth) * 0.16;
-		const view = viewport(rect);
-		const target = me ? animatedPlayerPosition(me, now) : { x: 720, y: 450 };
-		const lookAhead = isAiming
-			? { x: (pointerWorld.x - target.x) * 0.1, y: (pointerWorld.y - target.y) * 0.1 }
-			: { x: 0, y: 0 };
-		const cameraTarget = {
-			x: Math.max(
-				view.viewWidth / 2,
-				Math.min(game.arena.width - view.viewWidth / 2, target.x + lookAhead.x)
-			),
-			y: Math.max(
-				view.viewHeight / 2,
-				Math.min(game.arena.height - view.viewHeight / 2, target.y + lookAhead.y)
-			)
-		};
-		camera.x += (cameraTarget.x - camera.x) * 0.1;
-		camera.y += (cameraTarget.y - camera.y) * 0.1;
-		context.save();
-		context.translate(rect.width / 2, rect.height / 2);
-		context.scale(view.scale, view.scale);
-		context.translate(-camera.x, -camera.y);
-
-		context.fillStyle = '#172f3c';
-		context.fillRect(0, 0, game.arena.width, game.arena.height);
-		const grid = arenaGridMetrics(game.config);
-		for (let row = 0; row < grid.rows; row++) {
-			for (let column = 0; column < grid.columns; column++) {
-				const x = grid.originX + column * grid.cellSize - grid.cellSize / 2;
-				const y = grid.originY + row * grid.cellSize - grid.cellSize / 2;
-				context.fillStyle = (row + column) % 2 ? '#1e4150' : '#183744';
-				context.fillRect(x, y, grid.cellSize, grid.cellSize);
-				context.strokeStyle = 'rgba(100, 220, 229, 0.1)';
-				context.lineWidth = 1;
-				context.strokeRect(x, y, grid.cellSize, grid.cellSize);
-			}
+		camera.scale += (desiredScale(rect) - camera.scale) * 0.16;
+		let focus: Point;
+		if (mode === 'title') {
+			focus = {
+				x: game.arena.width / 2 + Math.sin(now / 9000) * 300,
+				y: game.arena.height / 2 + Math.sin(now / 6500) * 160
+			};
+		} else {
+			const target = me ? animatedPlayerPosition(me, chainAnimations, now) : camera;
+			focus = isAiming
+				? {
+						x: target.x + (pointerWorld.x - target.x) * 0.12,
+						y: target.y + (pointerWorld.y - target.y) * 0.12
+					}
+				: target;
 		}
+		const cameraTarget = clampCamera(focus, camera.scale, rect);
+		const follow = mode === 'title' ? 0.03 : 0.1;
+		camera.x += (cameraTarget.x - camera.x) * follow;
+		camera.y += (cameraTarget.y - camera.y) * follow;
+		canvas.dataset.camera = `${camera.x.toFixed(2)},${camera.y.toFixed(2)},${camera.scale.toFixed(4)}`;
 
-		if (mode === 'tutorial' && me && tutorialRouteIds.length) {
-			const route = tutorialRouteIds
-				.map((id) => game?.arena.monsters[id])
-				.filter(Boolean) as Monster[];
-			context.strokeStyle = '#64dce5';
-			context.lineWidth = 6;
-			context.beginPath();
-			context.moveTo(me.position.x, me.position.y);
-			if (route[0]) context.lineTo(route[0].position.x, route[0].position.y);
-			context.stroke();
-			context.strokeStyle = 'rgba(255, 241, 166, 0.75)';
-			context.lineWidth = 4;
-			context.setLineDash([7, 7]);
-			context.beginPath();
-			if (route[0]) context.moveTo(route[0].position.x, route[0].position.y);
-			for (const monster of route.slice(1)) context.lineTo(monster.position.x, monster.position.y);
-			context.stroke();
-			context.setLineDash([]);
-		}
-
-		for (const player of players) {
-			if (!player.chain.length) continue;
-			const linked = player.chain
-				.map((id) => game?.arena.monsters[id])
-				.filter(Boolean) as Monster[];
-			context.strokeStyle = player.id === humanId ? '#fff1a6' : colorFor(player.color);
-			context.lineWidth = 12;
-			context.lineCap = 'round';
-			context.beginPath();
-			context.moveTo(player.position.x, player.position.y);
-			for (const monster of linked) context.lineTo(monster.position.x, monster.position.y);
-			context.stroke();
-			context.strokeStyle = '#4b2533';
-			context.lineWidth = 4;
-			context.stroke();
-			if (playerGrindstone(player).ready && linked.at(-1)) {
-				const endpoint = linked.at(-1)!.position;
-				drawRainbowAura(context, endpoint.x, endpoint.y, 31, now);
-			}
-		}
-
-		for (const monster of monsters) {
-			if (!monster.alive) continue;
-			if (mode === 'tutorial' && tutorialRouteIds.includes(monster.id)) {
-				const routeIndex = tutorialRouteIds.indexOf(monster.id);
-				const pulse = 27 + Math.sin((game?.timeMs ?? 0) * 0.008) * 3;
-				context.fillStyle = 'rgba(255, 241, 166, 0.18)';
-				context.fillRect(
-					monster.position.x - pulse,
-					monster.position.y - pulse,
-					pulse * 2,
-					pulse * 2
-				);
-				context.strokeStyle = routeIndex === 0 ? '#64dce5' : '#fff1a6';
-				context.lineWidth = 3;
-				context.strokeRect(
-					monster.position.x - pulse,
-					monster.position.y - pulse,
-					pulse * 2,
-					pulse * 2
-				);
-			}
-			if (
-				!drawSprite(context, spriteIndex(monster.color), monster.position.x, monster.position.y, 45)
-			) {
-				context.fillStyle = colorFor(monster.color);
-				context.fillRect(monster.position.x - 12, monster.position.y - 12, 24, 24);
-			}
-		}
-
-		for (const animation of chainAnimations.values()) {
-			const elapsed = Math.max(0, now - animation.startedAt);
-			const hitCount = animation.timing.arrivalTimes.filter(
-				(arrivalTime) => elapsed >= arrivalTime
-			).length;
-			for (const node of animation.nodes.slice(hitCount)) {
-				if (game.arena.monsters[node.id]?.alive) continue;
-				drawSprite(context, spriteIndex(node.color), node.position.x, node.position.y, 45);
-			}
-			for (let index = Math.max(0, hitCount - 2); index < hitCount; index++) {
-				const node = animation.nodes[index]!;
-				const impactAge = elapsed - animation.timing.arrivalTimes[index]!;
-				if (impactAge < 0 || impactAge > 190) continue;
-				const impactProgress = impactAge / 190;
-				context.strokeStyle = `rgba(255,227,110,${1 - impactProgress})`;
-				context.lineWidth = 5 - impactProgress * 3;
-				context.beginPath();
-				context.arc(node.position.x, node.position.y, 12 + impactProgress * 34, 0, Math.PI * 2);
-				context.stroke();
-				for (let ray = 0; ray < 6; ray++) {
-					const angle = (Math.PI * 2 * ray) / 6;
-					const inner = 14 + impactProgress * 16;
-					const outer = 25 + impactProgress * 30;
-					context.beginPath();
-					context.moveTo(
-						node.position.x + Math.cos(angle) * inner,
-						node.position.y + Math.sin(angle) * inner
-					);
-					context.lineTo(
-						node.position.x + Math.cos(angle) * outer,
-						node.position.y + Math.sin(angle) * outer
-					);
-					context.stroke();
-				}
-			}
-		}
-
-		for (const projectile of projectiles) {
-			context.save();
-			context.translate(projectile.position.x, projectile.position.y);
-			context.rotate(Math.atan2(projectile.velocity.y, projectile.velocity.x));
-			drawSprite(context, 4, 0, 0, 30 + projectile.radius * 1.4);
-			context.restore();
-		}
-
-		for (const player of players) {
-			if (player.mode === 'dead') continue;
-			const visualPosition = animatedPlayerPosition(player, now);
-			const local = player.id === humanId;
-			const playerMax = player.maxHealth ?? maxHealthForScore(player.score);
-			const healthRatio = Math.max(0, player.health / playerMax);
-			if (playerGrindstone(player).ready)
-				drawRainbowAura(context, visualPosition.x, visualPosition.y, local ? 40 : 34, now);
-			if (player.mode === 'parrying')
-				drawSprite(context, 5, visualPosition.x, visualPosition.y, 78);
-			drawSprite(context, 0, visualPosition.x, visualPosition.y, local ? 62 : 52);
-			context.fillStyle = '#281d2b';
-			context.fillRect(visualPosition.x - 27, visualPosition.y - 42, 54, 7);
-			context.fillStyle =
-				healthRatio > 0.35 ? (local ? '#ffe36e' : colorFor(player.color)) : '#ff665f';
-			context.fillRect(visualPosition.x - 25, visualPosition.y - 40, 50 * healthRatio, 3);
-			if (local && !hasCommittedChain && !isDragging && !player.chain.length && mode !== 'title')
-				drawChainStartCue(context, visualPosition, now);
-		}
-
-		if (isAiming && me) {
-			context.strokeStyle = '#fff8dc';
-			context.lineWidth = 2;
-			context.setLineDash([8, 8]);
-			context.beginPath();
-			context.moveTo(me.position.x, me.position.y);
-			context.lineTo(pointerWorld.x, pointerWorld.y);
-			context.stroke();
-			context.setLineDash([]);
-			context.strokeRect(pointerWorld.x - 9, pointerWorld.y - 9, 18, 18);
-		}
-		context.restore();
+		const playing = mode !== 'title';
+		context.setTransform(dpr, 0, 0, dpr, 0, 0);
+		renderer.draw(context, {
+			game,
+			humanId: playing ? humanId : '',
+			now,
+			width: rect.width,
+			height: rect.height,
+			camera,
+			chainAnimations,
+			tutorialRouteIds: mode === 'tutorial' ? tutorialRouteIds : [],
+			legalTargetIds: playing ? legalTargetIds() : new Set(),
+			startCue:
+				playing && me && !hasCommittedChain && !isDragging && !me.chain.length && !isDead
+					? useTouchControls
+						? 'HOLD + DRAG FROM HERO'
+						: 'DRAG FROM YOUR HERO'
+					: null,
+			aim: playing && isAiming ? { target: pointerWorld, power } : null,
+			chainPreview: playing ? chainPreview() : null,
+			spectating: !playing
+		});
 	}
 
 	onMount(() => {
@@ -1240,20 +1120,44 @@
 		const updateTouchControls = () => (useTouchControls = touchQuery.matches);
 		updateTouchControls();
 		touchQuery.addEventListener('change', updateTouchControls);
-		spriteSheet = new Image();
-		spriteSheet.src = '/assets/grindion-sprites.png';
-		if (
-			(import.meta.env.DEV || import.meta.env.VITE_E2E === 'true') &&
-			new URLSearchParams(window.location.search).has('respawn-demo')
-		)
-			startRespawnPreview();
+		renderer.load('/assets/grindion-sprites.png');
+		if (import.meta.env.DEV || import.meta.env.VITE_E2E === 'true') {
+			const params = new URLSearchParams(window.location.search);
+			if (params.has('respawn-demo')) startRespawnPreview();
+			else if (params.has('short-round')) startArena(4_000);
+		}
 		let frame = 0;
 		let last = performance.now();
 		let accumulator = 0;
+		let attractAccumulator = 0;
 		const loop = (now: number) => {
 			const elapsed = Math.min(100, now - last);
 			last = now;
-			if (game && isRunning) {
+			if (mode === 'title') {
+				if (!game) startAttract();
+				attractAccumulator += elapsed;
+				while (game && attractAccumulator >= 50) {
+					const result = stepGame($state.snapshot(game), attractBots.update(game), 50);
+					game = result.state;
+					for (const event of result.events) renderer.handleEvent(event, game, '');
+					for (const event of result.events) {
+						if (event.type !== 'chain-committed') continue;
+						chainAnimations.set(event.playerId, {
+							playerId: event.playerId,
+							origin: { ...event.origin },
+							nodes: event.monsterIds.map((id) => ({
+								id,
+								position: { ...game!.arena.monsters[id]!.position },
+								color: game!.arena.monsters[id]!.color
+							})),
+							startedAt: now,
+							timing: createChainMotionTiming(event.monsterIds.length)
+						});
+					}
+					attractAccumulator -= 50;
+				}
+			} else if (game && isRunning) {
+				attractAccumulator = 0;
 				if (lobbyRole === 'guest') accumulator = 0;
 				else accumulator += elapsed;
 				while (accumulator >= 50) {
@@ -1319,324 +1223,529 @@
 
 <svelte:head>
 	<title>Grindion — Chain. Power. Survive.</title>
-	<meta name="description" content="A pixel-art multiplayer puzzle-combat prototype." />
+	<meta
+		name="description"
+		content="A pixel-art multiplayer puzzle brawler. Chain monsters, bank Score or forge Power, and spend everything on one shot."
+	/>
 </svelte:head>
 
 <svelte:window onkeydown={onKeyDown} onblur={cancelControls} />
 
-<main class="shell">
-	<header class="topbar">
-		<div class="brand-lockup">
-			<span class="brand-mark">G</span>
-			<div><strong>GRINDION</strong><span>CHAIN BRAWLER</span></div>
-		</div>
-		{#if mode !== 'tutorial'}
-			<div class:urgent={secondsLeft <= 30} class="round-clock">
-				<span>ROUND</span><strong>{timerText}</strong>
-			</div>
-			<div class="server-state">
-				<i></i>{serverArena
-					? isRunning
-						? 'ARENA SERVER LIVE'
-						: 'REJOIN ARENA'
-					: lobbyRole && mode === 'arena'
-						? isRunning
-							? lobbyRole === 'host'
-								? 'NETWORK HOST LIVE'
-								: 'SYNCED TO HOST'
-							: 'NETWORK ROUND ENDED'
-						: isRunning
-							? 'SIMULATION LIVE'
-							: 'CAVERN READY'}
-			</div>
-		{:else}
-			<div class="training-progress">TRAINING MODE</div>
-		{/if}
-	</header>
+{#snippet sprite(cell: number, size: number)}
+	{@const frame = SPRITE_FRAMES[cell]!}
+	{@const k = size / Math.max(frame.width, frame.height)}
+	<span
+		class="sprite"
+		aria-hidden="true"
+		style:width={`${size}px`}
+		style:height={`${size}px`}
+		style:background-size={`${2172 * k}px ${724 * k}px`}
+		style:background-position={`${-frame.x * k + (size - frame.width * k) / 2}px ${-frame.y * k + (size - frame.height * k) / 2}px`}
+	></span>
+{/snippet}
 
-	<section class:tutorial-layout={mode === 'tutorial'} class="play-layout">
-		<div class="arena-column">
-			{#if mode === 'tutorial'}
-				<div class="tutorial-card">
-					<div>
-						<span
-							>LESSON {Math.min(tutorialStep + 1, TUTORIAL_STEPS.length)} / {TUTORIAL_STEPS.length}</span
+{#snippet keycap(label: string)}<kbd>{label}</kbd>{/snippet}
+
+<main class="game" class:touch={useTouchControls} data-mode={mode}>
+	<div
+		class:dragging={isDragging}
+		class:aiming={isAiming}
+		class:dead={isDead}
+		class:player-hover={pointerOverPlayer}
+		class="stage"
+		role="application"
+		aria-label="Grindion game arena"
+	>
+		<canvas
+			bind:this={canvas}
+			tabindex="0"
+			onpointerdown={onPointerDown}
+			onpointermove={onPointerMove}
+			onpointerup={onPointerUp}
+			onpointercancel={cancelControls}
+			oncontextmenu={(event) => event.preventDefault()}
+		></canvas>
+	</div>
+
+	{#if mode === 'title'}
+		<div class="title-screen">
+			<div class="title-column">
+				<header class="hero">
+					<img
+						class="hero-art"
+						src="/assets/grindion-banner.webp"
+						alt=""
+						width="1600"
+						height="533"
+						fetchpriority="high"
+					/>
+					<h1 class="visually-hidden">GRINDION</h1>
+					<p class="tagline">Chain monsters. Choose your payoff. <em>Spend everything.</em></p>
+				</header>
+
+				<section class="play-card panel" aria-label="Play">
+					{#if lobbyStatus === 'lobby'}
+						<div class="lobby">
+							<div class="lobby-heading">
+								<span class="label">{publicArena ? 'PUBLIC ARENA' : 'ROOM CODE'}</span>
+								<strong
+									>{publicArena
+										? lobbyMembers.length >= 2
+											? 'MATCH FOUND'
+											: 'SEARCHING…'
+										: roomCode}</strong
+								>
+							</div>
+							<ul aria-label="Room players">
+								{#each lobbyMembers as member (member.playerId)}
+									<li>
+										<i></i>{member.playerId === localPlayerId ? 'YOU' : member.name}<small
+											>{publicArena ? 'READY' : member.role === 'host' ? 'HOST' : 'READY'}</small
+										>
+									</li>
+								{/each}
+							</ul>
+							{#if publicArena}
+								<p>
+									{lobbyMembers.length >= 2
+										? 'Rival found. Dropping into the arena…'
+										: 'Searching for another real player…'}
+								</p>
+							{:else if lobbyRole === 'host'}
+								<button class="btn primary wide" onclick={startMultiplayerMatch}
+									>START ONLINE MATCH</button
+								>
+							{:else}
+								<p>Waiting for the host to start the round…</p>
+							{/if}
+							<button class="btn ghost" onclick={leaveRoom}>LEAVE ROOM</button>
+						</div>
+					{:else}
+						<label class="callsign">
+							<span class="label">CALLSIGN</span>
+							<input maxlength="18" autocomplete="nickname" bind:value={playerName} />
+						</label>
+						<button
+							class="btn primary wide join"
+							disabled={lobbyStatus === 'connecting'}
+							onclick={joinOnlineArena}
 						>
-						<h2>{TUTORIAL_STEPS[tutorialStep].title}</h2>
-						<p>{tutorialStepCopy()}</p>
-					</div>
-					<div class="lesson-dots">
+							{lobbyStatus === 'connecting' ? 'ENTERING ARENA…' : 'JOIN ONLINE ARENA'}
+						</button>
+						<p class="join-note"><i class="live-dot"></i>PLAY NOW · BOTS FILL EMPTY SEATS</p>
+
+						<div class="solo-row">
+							<button class="btn" onclick={startTutorial}>
+								PLAY TUTORIAL {@render keycap('T')}
+							</button>
+							<button class="btn" onclick={() => startArena()}>
+								SOLO ARENA {@render keycap('A')}
+							</button>
+						</div>
+
+						<details class="private-rooms">
+							<summary>PRIVATE ROOMS</summary>
+							<div class="private-room-actions">
+								<div class="join-room">
+									<input
+										aria-label="Private room code"
+										placeholder="ROOM CODE"
+										maxlength="6"
+										bind:value={joinCode}
+									/>
+									<button
+										class="btn small"
+										disabled={!isSupabaseConfigured() || lobbyStatus === 'connecting'}
+										onclick={() => connectRoom('guest')}>JOIN PRIVATE</button
+									>
+								</div>
+								<button
+									class="btn small"
+									disabled={!isSupabaseConfigured() || lobbyStatus === 'connecting'}
+									onclick={() => connectRoom('host')}>CREATE PRIVATE ROOM</button
+								>
+								{#if !isSupabaseConfigured()}
+									<small>ADD THE TWO PUBLIC SUPABASE ENV VARS TO ENABLE PRIVATE ROOMS</small>
+								{/if}
+							</div>
+						</details>
+					{/if}
+					{#if lobbyError}<p class="error" role="alert">{lobbyError}</p>{/if}
+				</section>
+
+				<ol class="how-to-play" aria-label="How to play">
+					{#each HOW_TO_PLAY as step, index (step.title)}
+						<li class="panel">
+							{@render sprite(step.sprite, 44)}
+							<div>
+								<strong><b>{index + 1}</b>{step.title}</strong>
+								<span>{step.copy}</span>
+							</div>
+						</li>
+					{/each}
+				</ol>
+			</div>
+		</div>
+	{:else}
+		<header class="hud-top">
+			<div class="hud-left">
+				<button class="btn icon" onclick={exitToTitle} aria-label="Back to title">
+					<span aria-hidden="true">◂</span>
+				</button>
+				<div class="wordmark" aria-hidden="true">GRINDION</div>
+				{#if mode === 'arena'}
+					<div class="status-pill" class:offline={!isRunning}><i></i>{statusText}</div>
+				{:else}
+					<div class="status-pill training"><i></i>TRAINING MODE</div>
+				{/if}
+			</div>
+			{#if mode === 'arena'}
+				<div class="round-clock" class:urgent={secondsLeft <= 30}>
+					<span>ROUND</span><strong>{timerText}</strong>
+				</div>
+			{/if}
+			<div class="hud-right">
+				{#if mode === 'arena' && myRank}
+					<button
+						class="rank-chip"
+						aria-expanded={showStandings}
+						aria-controls="leaderboard"
+						onclick={() => (showStandings = !showStandings)}
+					>
+						<small>RANK</small><strong>#{myRank}</strong><small>/ {standings.length}</small>
+					</button>
+				{/if}
+				<button
+					class="btn icon"
+					aria-label="Controls and rules"
+					aria-expanded={showHelp}
+					onclick={() => (showHelp = !showHelp)}>?</button
+				>
+			</div>
+		</header>
+
+		{#if mode === 'tutorial'}
+			<section class="tutorial-card panel" aria-live="polite">
+				<div class="lesson-meta">
+					<span class="label"
+						>LESSON {Math.min(tutorialStep + 1, TUTORIAL_STEPS.length)} / {TUTORIAL_STEPS.length}</span
+					>
+					<div class="lesson-dots" aria-hidden="true">
 						{#each TUTORIAL_STEPS as step, index (step.title)}<i
 								class:done={index < tutorialStep}
 								class:current={index === tutorialStep}
 							></i>{/each}
 					</div>
-					{#if tutorialStep === 2}<button onclick={continueAfterGrowthLesson}>BUILD POWER →</button
-						>{/if}
-					{#if tutorialStep === 6}<button onclick={startArena}>ENTER LIVE ARENA →</button>{/if}
 				</div>
-			{/if}
-			<div
-				class:dragging={isDragging}
-				class:aiming={isAiming}
-				class:dead={isDead}
-				class:player-hover={pointerOverPlayer}
-				class="arena-frame"
-				role="application"
-				aria-label="Grindion game arena"
+				<h2>{TUTORIAL_STEPS[tutorialStep].title}</h2>
+				<p>{tutorialStepCopy()}</p>
+				{#if tutorialStep === 2}<button class="btn primary" onclick={continueAfterGrowthLesson}
+						>BUILD POWER →</button
+					>{/if}
+				{#if tutorialStep === 6}<button class="btn primary" onclick={() => startArena()}
+						>ENTER LIVE ARENA →</button
+					>{/if}
+			</section>
+		{/if}
+
+		{#if mode === 'arena'}
+			<aside
+				id="leaderboard"
+				class="leaderboard panel"
+				class:open={showStandings}
+				aria-label="Leaderboard"
 			>
-				{#if serverArena && isRunning}
-					<div class="arena-social">
-						<button onclick={shareArena}>{shareMessage || 'INVITE FRIENDS'}</button>
-						<a href={resolve(`/?arena=${roomCode}`)}>ARENA {roomCode}</a>
-						<button onclick={leaveRoom}>LEAVE ARENA</button>
-					</div>
-				{/if}
-				<canvas
-					bind:this={canvas}
-					tabindex="0"
-					onpointerdown={onPointerDown}
-					onpointermove={onPointerMove}
-					onpointerup={onPointerUp}
-					onpointercancel={cancelControls}
-					oncontextmenu={(event) => event.preventDefault()}
-				></canvas>
-
-				{#if mode !== 'title' && (mode === 'arena' || tutorialStep > 0)}
-					<div class:tutorial-hud={mode === 'tutorial'} class="player-hud">
-						{#if mode === 'arena' || tutorialStep >= 5}
-							<div
-								class="heart-hud"
-								aria-label={`Health ${Math.ceil(health)} of ${Math.ceil(maxHealth)}`}
-							>
-								<div>
-									<b>VITALS</b><i
-										><em style={`width:${Math.min(100, (health / Math.max(1, maxHealth)) * 100)}%`}
-										></em></i
-									>
-								</div>
-								<strong>{Math.ceil(health)}</strong>
-							</div>
-						{/if}
-						{#if mode === 'arena' || tutorialStep >= 1}
-							<div class="score-card">
-								<span>SCORE</span><strong>{score}</strong
-								>{#if mode === 'arena' || tutorialStep >= 2}<small>NO PATH LIMIT</small>{/if}
-							</div>
-						{/if}
-						{#if mode === 'arena' || tutorialStep >= 3}
-							<div class="power-card">
-								<span>{isAiming ? 'ARMED · ALL IN' : 'POWER RESERVE'}</span><strong
-									>{Math.floor(power)}</strong
-								><i><em style={`width:${Math.min(100, (power / 120) * 100)}%`}></em></i>
-							</div>
-						{/if}
-					</div>
-				{/if}
-				{#if mode === 'tutorial' && tutorialStep === 2}
-					<div class="range-callout">ADJACENT PATHS · UNLIMITED DISTANCE</div>
-				{/if}
-				{#if isAiming}
-					<div class="aim-callout">RELEASE TO FIRE ALL {Math.floor(power)} POWER</div>
-				{/if}
-
-				{#if chainLength > 0}
-					<div class="chain-status">
-						<span>{chainLength}×</span>
-						{#if grindstoneReady}
-							<strong>GRINDSTONE READY</strong><small>NEXT MONSTER MAY BE ANY COLOR</small>
-						{:else if mode === 'tutorial' && tutorialStep === 0}
-							<strong>KEEP DRAGGING</strong><small>CONNECT THE HIGHLIGHTED ROUTE</small>
-						{:else if mode === 'tutorial' && tutorialStep === 1}
-							<strong>RELEASE TO {dragConversion === 'power' ? 'STORE POWER' : 'BANK SCORE'}</strong
-							><small
-								>{dragConversion === 'power'
-									? 'RIGHT-DRAG CONVERTS THE ROUTE TO POWER'
-									: 'YOU LAND ON THE LAST CREATURE'}</small
-							>
-						{:else if mode === 'tutorial' && tutorialStep === 3 && useTouchControls}
-							<strong>POWER MODE SELECTED</strong><small>RELEASE TO FORGE POWER</small>
-						{:else if mode === 'tutorial' && tutorialStep === 3}
-							<strong>RIGHT-DRAG + RELEASE</strong><small>STORE THIS CHAIN AS POWER</small>
-						{:else if useTouchControls}
-							<strong>RELEASE: {mobileConversion === 'power' ? 'FORGE POWER' : 'BANK SCORE'}</strong
-							><small>CHOOSE MODE BEFORE STARTING A CHAIN</small>
-						{:else}
-							<strong>RELEASE: {dragConversion === 'power' ? 'STORE POWER' : 'BANK SCORE'}</strong
-							><small>LMB SCORES · RMB STORES POWER</small>
-						{/if}
-					</div>
-				{/if}
-				<div class="event-feed" aria-live="polite">
-					{#each eventFeed as event (event.id)}<div
-							class:event-cyan={event.tone === 'cyan'}
-							class:event-coral={event.tone === 'coral'}
-							class:event-violet={event.tone === 'violet'}
+				<div class="panel-heading">
+					<span>LIVE BOARD</span><small>{players.length || 8} ACTIVE</small>
+				</div>
+				<div class="leaders">
+					{#each leaderboard as player (player.id)}<div
+							class:you={player.id === humanId}
+							class:down={player.mode === 'dead'}
+							class="leader-row"
 						>
-							{event.text}
+							<b>{player.rank}</b><i style:--player-color={playerColor(player, humanId)}></i><span
+								>{player.id === humanId ? 'YOU' : player.name}</span
+							><strong>{Math.round(player.score)}</strong>
 						</div>{/each}
 				</div>
-
-				{#if mode === 'arena' && isDead}
-					<div
-						class="respawn-overlay"
-						role="dialog"
-						aria-modal="true"
-						aria-labelledby="respawn-title"
-					>
-						<div class="respawn-card">
-							<div class="shatter-mark" aria-hidden="true"><span></span><i></i><b></b></div>
-							<div class="eyebrow">SHATTERED BY {deathRecap?.killerName ?? 'A RIVAL'}</div>
-							<h2 id="respawn-title">YOU WERE BROKEN</h2>
-							<div class="death-penalty">
-								<div><span>SCORE LOST</span><strong>−{deathRecap?.scoreLost ?? 0}</strong></div>
-								<div><span>SCORE REMAINING</span><strong>{score}</strong></div>
-								<div><span>POWER</span><strong>EMPTIED</strong></div>
-							</div>
-							<div class="respawn-status">
-								<div><span>REDEPLOYING TO A SAFE CELL</span><strong>{respawnSeconds}</strong></div>
-								<i><em style={`width:${respawnProgress}%`}></em></i>
-							</div>
-							<p>
-								You return at full health with {Math.ceil(
-									(game?.config.spawnProtectionMs ?? 0) / 1000
-								)}s of spawn protection.
-							</p>
-						</div>
+				{#if serverArena && isRunning}
+					<div class="arena-social">
+						<button class="btn small primary" onclick={shareArena}
+							>{shareMessage || 'INVITE FRIENDS'}</button
+						>
+						<a href={resolve(`/?arena=${roomCode}`)}>ARENA {roomCode}</a>
+						<button class="btn small ghost" onclick={leaveRoom}>LEAVE ARENA</button>
 					</div>
 				{/if}
+			</aside>
+		{/if}
 
-				{#if mode === 'title'}
-					<div class="start-overlay">
-						<div class="crest">G</div>
-						<div class="eyebrow">A SHARED-BOARD CHAIN BRAWLER</div>
-						<h1>GRIND<span>ION</span></h1>
-						<p>Weave greedy chains. Bank Score or forge Power. Every shot costs everything.</p>
-						{#if lobbyStatus === 'lobby'}
-							<div class="lobby-card">
-								<div>
-									<span>{publicArena ? 'PUBLIC ARENA' : 'ROOM CODE'}</span><strong
-										>{publicArena
-											? lobbyMembers.length >= 2
-												? 'MATCH FOUND'
-												: 'SEARCHING…'
-											: roomCode}</strong
-									>
-								</div>
-								<ul aria-label="Room players">
-									{#each lobbyMembers as member (member.playerId)}
-										<li>
-											<i></i>{member.playerId === localPlayerId ? 'YOU' : member.name}<small
-												>{publicArena ? 'READY' : member.role === 'host' ? 'HOST' : 'READY'}</small
-											>
-										</li>
-									{/each}
-								</ul>
-								{#if publicArena}
-									<p>
-										{lobbyMembers.length >= 2
-											? 'Rival found. Dropping into the arena…'
-											: 'Searching for another real player…'}
-									</p>
-								{:else if lobbyRole === 'host'}
-									<button onclick={startMultiplayerMatch}>START ONLINE MATCH ⚡</button>
-								{:else}
-									<p>Waiting for the host to start the round…</p>
-								{/if}
-								<button class="text-button" onclick={leaveRoom}>LEAVE ROOM</button>
-							</div>
-						{:else}
-							<div class="online-setup">
-								<label>
-									<span>CALLSIGN</span>
-									<input maxlength="18" autocomplete="nickname" bind:value={playerName} />
-								</label>
-								<div class="online-actions">
-									<button
-										class="public-arena-button"
-										disabled={lobbyStatus === 'connecting'}
-										onclick={joinOnlineArena}
-										>{lobbyStatus === 'connecting'
-											? 'ENTERING ARENA…'
-											: 'JOIN ONLINE ARENA ⚡'}</button
-									>
-									<small>PLAY NOW · BOTS FILL EMPTY SEATS</small>
-									<details class="host-room-option">
-										<summary>PRIVATE ROOMS</summary>
-										<div class="private-room-actions">
-											<div class="join-room">
-												<input
-													aria-label="Private room code"
-													placeholder="ROOM CODE"
-													maxlength="6"
-													bind:value={joinCode}
-												/>
-												<button
-													disabled={!isSupabaseConfigured() || lobbyStatus === 'connecting'}
-													onclick={() => connectRoom('guest')}>JOIN PRIVATE</button
-												>
-											</div>
-											<button
-												class="secondary"
-												disabled={!isSupabaseConfigured() || lobbyStatus === 'connecting'}
-												onclick={() => connectRoom('host')}>CREATE PRIVATE ROOM</button
-											>
-										</div>
-									</details>
-								</div>
-								{#if !isSupabaseConfigured()}
-									<small>ADD THE TWO PUBLIC SUPABASE ENV VARS TO ENABLE PRIVATE ROOMS</small>
-								{/if}
-							</div>
-							<div class="solo-divider"><span>OR TRAIN OFFLINE</span></div>
-							<div class="title-actions">
-								<button onclick={startTutorial}>PLAY TUTORIAL <span>▶</span></button><button
-									class="secondary"
-									onclick={startArena}>ENTER ARENA <span>⚔</span></button
-								>
-							</div>
-							<p class="keyboard-start"><kbd>T</kbd> TUTORIAL · <kbd>A</kbd> ARENA</p>
-						{/if}
-						{#if lobbyError}<p class="lobby-error" role="alert">{lobbyError}</p>{/if}
+		{#if mode === 'arena' || tutorialStep > 0}
+			<div class:tutorial-hud={mode === 'tutorial'} class="player-hud panel">
+				{#if mode === 'arena' || tutorialStep >= 5}
+					<div
+						class="heart-hud"
+						class:low={health / Math.max(1, maxHealth) < 0.35}
+						aria-label={`Health ${Math.ceil(health)} of ${Math.ceil(maxHealth)}`}
+					>
+						<span class="label">VITALS</span>
+						<strong>{Math.ceil(health)}<small>/{Math.ceil(maxHealth)}</small></strong>
+						<i class="meter"
+							><em style:width={`${Math.min(100, (health / Math.max(1, maxHealth)) * 100)}%`}
+							></em></i
+						>
 					</div>
-				{:else if !isRunning}
-					<div class="start-overlay compact">
-						<div class="eyebrow">ROUND COMPLETE</div>
-						<h1>
-							{leaderboard[0]?.id === humanId
-								? 'CAVERN CONQUERED'
-								: `${leaderboard[0]?.name ?? 'A RIVAL'} WINS`}
-						</h1>
-						{#if serverArena}
-							<p>{lobbyError || 'Next round starts in a moment…'}</p>
-						{:else if lobbyRole === 'host'}
-							<button onclick={startMultiplayerMatch}>HOST REMATCH ↻</button>
-						{:else if lobbyRole === 'guest'}
-							<p>Waiting for the host to launch a rematch…</p>
-						{:else}
-							<button onclick={startArena}>PLAY AGAIN ↻</button>
-						{/if}
-						{#if lobbyRole}<button class="text-button" onclick={leaveRoom}>LEAVE ROOM</button>{/if}
+				{/if}
+				{#if mode === 'arena' || tutorialStep >= 1}
+					<div class="score-card">
+						<span class="label">SCORE</span><strong>{score}</strong>
+						{#if mode === 'tutorial' && tutorialStep === 2}<small>NO PATH LIMIT</small>{/if}
+					</div>
+				{/if}
+				{#if mode === 'arena' || tutorialStep >= 3}
+					<div class="power-card" class:armed={power >= minFirePower}>
+						<span class="label">{isAiming ? 'ARMED · ALL IN' : 'POWER'}</span><strong
+							>{Math.floor(power)}</strong
+						>
+						<i class="meter"
+							><em style:width={`${Math.min(100, (power / powerCap) * 100)}%`}></em><b
+								style:left={`${(minFirePower / powerCap) * 100}%`}
+							></b></i
+						>
 					</div>
 				{/if}
 			</div>
-			{#if mode !== 'title' && useTouchControls && isRunning && !isDead}
-				<div class="mobile-controls" role="group" aria-label="Touch game controls">
-					{#if mode === 'arena' || tutorialStep === 3}
-						<div class="mobile-conversion" aria-label="Chain reward">
-							<button
-								class:active={mobileConversion === 'score'}
-								aria-pressed={mobileConversion === 'score'}
-								onclick={() => (mobileConversion = 'score')}>BANK SCORE</button
-							><button
-								class:active={mobileConversion === 'power'}
-								aria-pressed={mobileConversion === 'power'}
-								onclick={() => (mobileConversion = 'power')}>FORGE POWER</button
-							>
-						</div>
+		{/if}
+
+		{#if mode === 'tutorial' && tutorialStep === 2}
+			<div class="callout">ADJACENT PATHS · UNLIMITED DISTANCE</div>
+		{/if}
+		{#if isAiming}
+			<div class="callout aim">RELEASE TO FIRE ALL {Math.floor(power)} POWER</div>
+		{:else if chainLength > 0}
+			<div class="chain-status" class:grindstone={grindstoneReady}>
+				<span>{chainLength}×</span>
+				<div>
+					{#if grindstoneReady}
+						<strong>GRINDSTONE READY</strong><small>NEXT MONSTER MAY BE ANY COLOR</small>
+					{:else if mode === 'tutorial' && tutorialStep === 0}
+						<strong>KEEP DRAGGING</strong><small>CONNECT THE HIGHLIGHTED ROUTE</small>
+					{:else if mode === 'tutorial' && tutorialStep === 1}
+						<strong>RELEASE TO {dragConversion === 'power' ? 'STORE POWER' : 'BANK SCORE'}</strong
+						><small
+							>{dragConversion === 'power'
+								? 'RIGHT-DRAG CONVERTS THE ROUTE TO POWER'
+								: 'YOU LAND ON THE LAST CREATURE'}</small
+						>
+					{:else if mode === 'tutorial' && tutorialStep === 3 && useTouchControls}
+						<strong>POWER MODE SELECTED</strong><small>RELEASE TO FORGE POWER</small>
+					{:else if mode === 'tutorial' && tutorialStep === 3}
+						<strong>RIGHT-DRAG + RELEASE</strong><small>STORE THIS CHAIN AS POWER</small>
+					{:else if useTouchControls}
+						<strong>RELEASE: {mobileConversion === 'power' ? 'FORGE POWER' : 'BANK SCORE'}</strong
+						><small>CHOOSE MODE BEFORE STARTING A CHAIN</small>
+					{:else if isDragging}
+						<strong>RELEASE: {dragConversion === 'power' ? 'STORE POWER' : 'BANK SCORE'}</strong
+						><small>LMB SCORES · RMB STORES POWER</small>
+					{:else}
+						<strong>5 / ENTER BANKS · + / F STORES</strong><small>0 OR ESC CANCELS</small>
 					{/if}
+				</div>
+			</div>
+		{/if}
+
+		<div class="event-feed" aria-live="polite">
+			{#each eventFeed as event (event.id)}<div class={`feed-item tone-${event.tone}`}>
+					{event.text}
+				</div>{/each}
+		</div>
+
+		{#if !useTouchControls && mode === 'arena'}
+			<div class="hint-strip" aria-hidden="true">
+				<span>{@render keycap('LMB')} drag hero · Score</span>
+				<span>{@render keycap('RMB')} drag hero · Power</span>
+				<span>{@render keycap('RMB')} hold · Aim</span>
+				<span>{@render keycap('SPACE')} Parry</span>
+				<span>{@render keycap('?')} Controls</span>
+			</div>
+		{/if}
+
+		{#if showHelp}
+			<div class="sheet-backdrop" role="presentation" onclick={() => (showHelp = false)}></div>
+			<div class="help-sheet panel" role="dialog" aria-modal="true" aria-label="Controls and rules">
+				<div class="sheet-heading">
+					<h2>How to play</h2>
+					<button class="btn icon" aria-label="Close" onclick={() => (showHelp = false)}>✕</button>
+				</div>
+				<div class="help-grid">
+					<section>
+						<h3>The loop</h3>
+						<ol class="rules">
+							{#each HOW_TO_PLAY as step, index (step.title)}
+								<li>
+									{@render sprite(step.sprite, 34)}
+									<div>
+										<strong>{index + 1}. {step.title}</strong><span>{step.copy}</span>
+									</div>
+								</li>
+							{/each}
+						</ol>
+					</section>
+					{#if useTouchControls}
+						<section>
+							<h3>Touch</h3>
+							<dl class="binds">
+								<dt>Hold hero + drag</dt>
+								<dd>Build a route</dd>
+								<dt>Release</dt>
+								<dd>Commit as the selected reward</dd>
+								<dt>Bank / Forge</dt>
+								<dd>Pick Score or Power before chaining</dd>
+								<dt>Aim + Fire</dt>
+								<dd>Drag to aim, release to fire all Power</dd>
+								<dt>Parry</dt>
+								<dd>Tap when the warning ring turns cyan</dd>
+							</dl>
+						</section>
+					{:else}
+						<section>
+							<h3>Mouse</h3>
+							<dl class="binds">
+								<dt>{@render keycap('LMB')} drag from hero</dt>
+								<dd>Route, release banks Score</dd>
+								<dt>{@render keycap('RMB')} drag from hero</dt>
+								<dd>Route, release stores Power</dd>
+								<dt>Drag back</dt>
+								<dd>Shorten the route</dd>
+								<dt>{@render keycap('RMB')} hold off hero</dt>
+								<dd>Aim and scout</dd>
+								<dt>Release aim</dt>
+								<dd>Fire every point of Power</dd>
+								<dt>{@render keycap('SPACE')}</dt>
+								<dd>Parry. Time it to the cyan ring</dd>
+							</dl>
+						</section>
+						<section>
+							<h3>Keyboard</h3>
+							<div class="numpad" aria-label="Numpad directions">
+								{#each ['7', '8', '9', '4', '5', '6', '1', '2', '3'] as key (key)}
+									<kbd class:bank={key === '5'}>{key}</kbd>
+								{/each}
+							</div>
+							<dl class="binds">
+								<dt>{@render keycap('QWE')} {@render keycap('AD')} {@render keycap('ZXC')}</dt>
+								<dd>Laptop directions</dd>
+								<dt>{@render keycap('5')} {@render keycap('S')} {@render keycap('ENTER')}</dt>
+								<dd>Bank Score</dd>
+								<dt>{@render keycap('+')} {@render keycap('F')}</dt>
+								<dd>Store Power</dd>
+								<dt>{@render keycap('0')} {@render keycap('ESC')}</dt>
+								<dd>Cancel the chain</dd>
+							</dl>
+						</section>
+					{/if}
+				</div>
+				<p class="risk-note">
+					<strong>Greed has a cost.</strong> While you chain you cannot shoot or parry. After you fire,
+					everyone can see you are empty.
+				</p>
+			</div>
+		{/if}
+
+		{#if mode === 'arena' && isDead}
+			<div class="overlay respawn" role="dialog" aria-modal="true" aria-labelledby="respawn-title">
+				<div class="overlay-card panel">
+					<div class="eyebrow danger">SHATTERED BY {deathRecap?.killerName ?? 'A RIVAL'}</div>
+					<h2 id="respawn-title">YOU WERE BROKEN</h2>
+					<div class="stat-row">
+						<div>
+							<span>SCORE LOST</span><strong class="danger">−{deathRecap?.scoreLost ?? 0}</strong>
+						</div>
+						<div><span>SCORE REMAINING</span><strong class="gold">{score}</strong></div>
+						<div><span>POWER</span><strong class="energy">EMPTIED</strong></div>
+					</div>
+					<div class="respawn-status">
+						<div><span>REDEPLOYING TO A SAFE CELL</span><strong>{respawnSeconds}</strong></div>
+						<i class="meter"><em style:width={`${respawnProgress}%`}></em></i>
+					</div>
+					<p>
+						You return at full health with {Math.ceil(
+							(game?.config.spawnProtectionMs ?? 0) / 1000
+						)}s of spawn protection.
+					</p>
+				</div>
+			</div>
+		{/if}
+
+		{#if !isRunning && mode === 'arena'}
+			<div class="overlay results" role="dialog" aria-modal="true" aria-labelledby="results-title">
+				<div class="overlay-card panel wide">
+					<div class="eyebrow">ROUND COMPLETE</div>
+					<h2 id="results-title">
+						{leaderboard[0]?.id === humanId
+							? 'CAVERN CONQUERED'
+							: `${leaderboard[0]?.name ?? 'A RIVAL'} WINS`}
+					</h2>
+					{#if myRank}<p class="placement">
+							You placed <strong>#{myRank}</strong> of {standings.length}
+						</p>{/if}
+					<table class="standings">
+						<thead><tr><th>#</th><th>PLAYER</th><th>SCORE</th><th>KOS</th><th>FALLS</th></tr></thead
+						>
+						<tbody>
+							{#each standings as player (player.id)}
+								<tr class:you={player.id === humanId}>
+									<td>{player.rank}</td>
+									<td
+										><i style:--player-color={playerColor(player, humanId)}></i>{player.id ===
+										humanId
+											? 'YOU'
+											: player.name}</td
+									>
+									<td>{Math.round(player.score)}</td>
+									<td>{player.kills}</td>
+									<td>{player.deaths}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+					<div class="overlay-actions">
+						{#if serverArena}
+							<p>{lobbyError || 'Next round starts in a moment…'}</p>
+						{:else if lobbyRole === 'host'}
+							<button class="btn primary" onclick={startMultiplayerMatch}>HOST REMATCH ↻</button>
+						{:else if lobbyRole === 'guest'}
+							<p>Waiting for the host to launch a rematch…</p>
+						{:else}
+							<button class="btn primary" onclick={() => startArena()}>PLAY AGAIN ↻</button>
+						{/if}
+						{#if lobbyRole}<button class="btn ghost" onclick={leaveRoom}>LEAVE ROOM</button
+							>{:else}<button class="btn ghost" onclick={exitToTitle}>MAIN MENU</button>{/if}
+					</div>
+				</div>
+			</div>
+		{/if}
+
+		{#if useTouchControls && isRunning && !isDead}
+			<div class="mobile-controls" role="group" aria-label="Touch game controls">
+				{#if mode === 'arena' || tutorialStep === 3}
+					<div class="mobile-conversion" aria-label="Chain reward">
+						<button
+							class:active={mobileConversion === 'score'}
+							aria-pressed={mobileConversion === 'score'}
+							onclick={() => (mobileConversion = 'score')}>BANK SCORE</button
+						><button
+							class:active={mobileConversion === 'power'}
+							aria-pressed={mobileConversion === 'power'}
+							onclick={() => (mobileConversion = 'power')}>FORGE POWER</button
+						>
+					</div>
+				{/if}
+				<div class="mobile-actions">
 					{#if mode === 'arena' || tutorialStep === 4}
 						<button
+							class="aim-control"
 							class:active={mobileAimArmed}
 							aria-pressed={mobileAimArmed}
 							onclick={toggleMobileAim}>{mobileAimArmed ? 'CANCEL AIM' : 'AIM + FIRE'}</button
@@ -1646,216 +1755,24 @@
 						<button class="parry-control" onclick={() => dispatch({ type: 'parry' })}>PARRY</button>
 					{/if}
 				</div>
-			{/if}
-			{#if mode !== 'tutorial'}
-				<div class="quick-controls">
-					<span><kbd>LMB FROM HERO</kbd> SCORE ROUTE</span><span
-						><kbd>RMB FROM HERO</kbd> POWER ROUTE</span
-					><span><kbd>DRAG BACK</kbd> SHORTEN ROUTE</span><span
-						><kbd>RMB OFF HERO</kbd> AIM / SCOUT</span
-					><span><kbd>RELEASE AIM</kbd> FIRE ALL</span><span><kbd>SPACE</kbd> PARRY</span>
-					<span><kbd>NUM 7–9 / 4·6 / 1–3</kbd> KEYBOARD ROUTE</span><span
-						><kbd>OR QWE / AD / ZXC</kbd> LAPTOP ROUTE</span
-					><span><kbd>5 / S / ENTER</kbd> SCORE</span><span><kbd>NUM + / F</kbd> POWER</span><span
-						><kbd>NUM 0 / ESC</kbd> CANCEL</span
-					>
-				</div>
-			{/if}
-		</div>
-
-		{#if mode !== 'tutorial'}
-			<aside class="side-panel">
-				<section class="leaderboard-panel">
-					<div class="panel-heading">
-						<span>LIVE BOARD</span><small>{players.length || 8} ACTIVE</small>
-					</div>
-					<div class="leaders">
-						{#each leaderboard as player (player.id)}<div
-								class:you={player.id === humanId}
-								class="leader-row"
-							>
-								<b>{String(player.rank).padStart(2, '0')}</b><i
-									style={`--player-color:${player.id === humanId ? '#ffe36e' : colorFor(player.color)}`}
-								></i><span>{player.id === humanId ? 'YOU' : player.name}</span><strong
-									>{Math.round(player.score)}</strong
-								>
-							</div>{/each}
-					</div>
-				</section>
-				<section class="rule-panel">
-					<div class="panel-heading"><span>CAVERN RULES</span><small>THE LOOP</small></div>
-					<ol>
-						<li>
-							<b>1</b>
-							<div><strong>CHAIN</strong><span>Connect creatures of one color.</span></div>
-						</li>
-						<li>
-							<b>2</b>
-							<div>
-								<strong>CHOOSE</strong><span>Score grows health. Power fights.</span>
-							</div>
-						</li>
-						<li>
-							<b>3</b>
-							<div>
-								<strong>COMMIT</strong><span>A shot spends all Power. A parry rewards timing.</span>
-							</div>
-						</li>
-						<li>
-							<b>4</b>
-							<div>
-								<strong>GRIND</strong><span>Chain 5 of one color to unlock one rainbow switch.</span
-								>
-							</div>
-						</li>
-					</ol>
-				</section>
-				<div class="risk-note">
-					<span>GREED HAS A COST</span>
-					<p>Long chains leave you still. Empty your Power and rivals know you cannot parry.</p>
-				</div>
-			</aside>
+			</div>
 		{/if}
-	</section>
+	{/if}
 </main>
 
 <style>
-	.arena-social {
-		position: absolute;
-		bottom: 12px;
-		left: 12px;
-		right: 12px;
-		z-index: 5;
-		display: flex;
-		justify-content: center;
-		flex-wrap: wrap;
-		gap: 8px;
-	}
-	.arena-social button,
-	.arena-social a {
-		font-size: 10px;
-		padding: 8px;
-		background: #281d2b;
-		color: #ffe36e;
-		border: 1px solid #ffe36e;
-	}
-
-	:global(body) {
-		image-rendering: pixelated;
-	}
-	.shell {
-		width: min(1080px, 100%);
-		min-height: 100vh;
-		margin: 0 auto;
-		padding: 12px 18px 20px;
-	}
-	.topbar {
-		height: 58px;
-		display: grid;
-		grid-template-columns: 1fr auto 1fr;
-		align-items: center;
-		margin-bottom: 12px;
-		border: 4px solid #241b2b;
-		border-width: 0 0 4px;
-		color: #fff5d6;
-	}
-	.brand-lockup {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-	}
-	.brand-lockup div {
-		display: flex;
-		flex-direction: column;
-	}
-	.brand-lockup strong {
-		color: #ffe36e;
-		font: 900 17px/1 monospace;
-		letter-spacing: 0.08em;
-		text-shadow: 3px 3px #4b2533;
-	}
-	.brand-lockup div span,
-	.server-state,
-	.round-clock span {
-		color: #9eb6ac;
-		font: 700 8px monospace;
-		letter-spacing: 0.13em;
-	}
-	.brand-mark,
-	.crest {
-		display: grid;
-		place-items: center;
-		color: #2a1c2d;
-		background: #ffe36e;
-		border: 4px solid #4b2533;
-		box-shadow: 3px 3px 0 #130f19;
-		font: 1000 19px monospace;
-	}
-	.brand-mark {
-		width: 34px;
-		height: 34px;
-	}
-	.round-clock {
-		display: flex;
-		align-items: baseline;
-		gap: 8px;
-	}
-	.round-clock strong {
-		font: 900 23px monospace;
-	}
-	.round-clock.urgent strong {
-		color: #ff665f;
-	}
-	.server-state {
-		justify-self: end;
-	}
-	.server-state i {
-		display: inline-block;
-		width: 8px;
-		height: 8px;
-		margin-right: 7px;
-		background: #6be7ac;
-		box-shadow: 2px 2px 0 #20544b;
-	}
-	.training-progress {
-		grid-column: 3;
-		justify-self: end;
-		color: #9eb6ac;
-		font: 800 9px monospace;
-		letter-spacing: 0.12em;
-	}
-	.play-layout {
-		display: grid;
-		grid-template-columns: minmax(0, 720px) 260px;
-		justify-content: center;
-		gap: 14px;
-	}
-	.play-layout.tutorial-layout {
-		grid-template-columns: minmax(0, 720px);
-	}
-	.arena-column {
-		min-width: 0;
-	}
-	.arena-frame {
-		position: relative;
-		width: 100%;
-		height: min(78vh, 860px);
-		min-height: 620px;
-		overflow: hidden;
-		border: 5px solid #281d2b;
-		border-radius: 4px;
-		background: #17313d;
-		box-shadow:
-			7px 7px 0 #0a0d14,
-			inset 0 0 0 3px #5d4656;
-	}
-	.arena-frame::after {
-		content: '';
-		position: absolute;
-		z-index: 2;
+	.game {
+		position: fixed;
 		inset: 0;
-		pointer-events: none;
-		box-shadow: inset 0 0 70px #081019aa;
+		overflow: hidden;
+		color: var(--ink);
+		background: var(--bg);
+		user-select: none;
+		-webkit-user-select: none;
+	}
+	.stage {
+		position: absolute;
+		inset: 0;
 	}
 	canvas {
 		display: block;
@@ -1864,6 +1781,7 @@
 		cursor: crosshair;
 		touch-action: none;
 		image-rendering: pixelated;
+		outline: none;
 	}
 	.player-hover canvas {
 		cursor: grab;
@@ -1874,314 +1792,1026 @@
 	.aiming canvas {
 		cursor: none;
 	}
-	.player-hud {
-		position: absolute;
-		z-index: 4;
-		left: 50%;
-		top: 14px;
-		transform: translateX(-50%);
-		display: grid;
-		grid-template-columns: 1fr auto 1fr;
-		align-items: stretch;
-		width: min(540px, calc(100% - 28px));
-		min-height: 58px;
-		color: #dffcff;
-		background: rgba(7, 18, 27, 0.9);
-		border: 2px solid #315a61;
-		border-top-color: #64dce5;
+
+	/* ---------- shared ---------- */
+	.panel {
+		background: var(--panel);
+		border: 2px solid var(--line);
+		border-radius: 6px;
 		box-shadow:
-			0 6px 0 rgba(6, 9, 15, 0.75),
-			inset 0 0 0 2px rgba(100, 220, 229, 0.08);
-		backdrop-filter: blur(4px);
+			0 4px 0 rgba(0, 0, 0, 0.35),
+			inset 0 1px 0 rgba(255, 255, 255, 0.06);
+		backdrop-filter: blur(8px);
+		-webkit-backdrop-filter: blur(8px);
 	}
-	.player-hud.tutorial-hud {
-		width: auto;
-		min-width: 170px;
-		grid-template-columns: repeat(3, auto);
+	.label {
+		color: var(--muted);
+		font: 600 11px/1 var(--font-pixel);
+		letter-spacing: 0.08em;
 	}
-	.tutorial-hud .score-card:first-child,
-	.tutorial-hud .power-card:first-child,
-	.tutorial-hud .heart-hud:first-child {
-		border-left: 0;
+	.visually-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
-	.tutorial-hud > :last-child {
-		border-right: 0;
+	.sprite {
+		display: inline-block;
+		flex: none;
+		background-image: url('/assets/grindion-sprites.png');
+		background-repeat: no-repeat;
+		image-rendering: pixelated;
 	}
-	.heart-hud,
-	.score-card,
-	.power-card {
+	.meter {
 		position: relative;
-		background: transparent;
-		border: 0;
-		box-shadow: none;
-		color: inherit;
-	}
-	.heart-hud {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 9px 14px;
-	}
-	.heart-hud div {
-		flex: 1;
-	}
-	.heart-hud strong {
-		color: #ff7a76;
-		font: 1000 18px monospace;
-	}
-	.heart-hud b,
-	.power-card span,
-	.score-card span {
 		display: block;
-		font: 900 8px monospace;
-		letter-spacing: 0.12em;
+		height: 8px;
+		overflow: hidden;
+		background: rgba(4, 2, 10, 0.7);
+		border: 1px solid rgba(255, 255, 255, 0.12);
+		border-radius: 2px;
 	}
-	.heart-hud i,
-	.power-card i {
-		display: block;
-		height: 5px;
-		margin-top: 5px;
-		background: #182833;
-		border: 1px solid #31505a;
-	}
-	.heart-hud em,
-	.power-card em {
+	.meter em {
 		display: block;
 		height: 100%;
-		background: #ff665f;
+		background: var(--mint);
+		box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.25);
+		transition: width 120ms ease-out;
+	}
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		min-height: 44px;
+		padding: 10px 16px;
+		color: var(--ink);
+		background: #2b2150;
+		border: 2px solid #4a3a85;
+		border-radius: 6px;
+		box-shadow:
+			inset 0 -4px 0 rgba(0, 0, 0, 0.3),
+			0 3px 0 rgba(0, 0, 0, 0.35);
+		font: 700 14px/1 var(--font-pixel);
+		letter-spacing: 0.05em;
+		cursor: pointer;
+		transition:
+			transform 80ms,
+			background 120ms,
+			border-color 120ms;
+	}
+	.btn:hover:not(:disabled) {
+		background: #35296a;
+		border-color: #6a55c0;
+		transform: translateY(-1px);
+	}
+	.btn:active:not(:disabled) {
+		transform: translateY(2px);
+		box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+	}
+	.btn:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+	.btn.primary {
+		color: #2a1600;
+		background: var(--gold);
+		border-color: #ffefa8;
+		box-shadow:
+			inset 0 -4px 0 #c78a1c,
+			0 3px 0 rgba(0, 0, 0, 0.4),
+			0 0 24px rgba(255, 210, 94, 0.25);
+	}
+	.btn.primary:hover:not(:disabled) {
+		background: #ffdf7e;
+		border-color: #fff6cf;
+	}
+	.btn.ghost {
+		color: var(--muted);
+		background: transparent;
+		border-color: transparent;
+		box-shadow: none;
+	}
+	.btn.ghost:hover:not(:disabled) {
+		color: var(--ink);
+		background: rgba(255, 255, 255, 0.06);
+		border-color: transparent;
+	}
+	.btn.small {
+		min-height: 36px;
+		padding: 8px 12px;
+		font-size: 12px;
+	}
+	.btn.wide {
+		width: 100%;
+	}
+	.btn.icon {
+		width: 40px;
+		min-height: 40px;
+		padding: 0;
+		font-size: 18px;
+	}
+	kbd {
+		display: inline-block;
+		min-width: 1.6em;
+		padding: 3px 5px 4px;
+		color: var(--ink);
+		background: #1b1434;
+		border: 1px solid #4a3a85;
+		border-bottom-width: 3px;
+		border-radius: 4px;
+		font: 600 11px/1 var(--font-pixel);
+		text-align: center;
+	}
+	.btn kbd {
+		color: inherit;
+		background: rgba(0, 0, 0, 0.2);
+		border-color: rgba(0, 0, 0, 0.25);
+	}
+
+	/* ---------- title ---------- */
+	.title-screen {
+		position: absolute;
+		inset: 0;
+		z-index: 10;
+		overflow-y: auto;
+		background:
+			radial-gradient(ellipse at 50% 30%, rgba(7, 5, 15, 0.2), rgba(7, 5, 15, 0.82) 70%),
+			linear-gradient(rgba(7, 5, 15, 0.35), rgba(7, 5, 15, 0.75));
+	}
+	.title-column {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 22px;
+		width: min(980px, 100%);
+		min-height: 100%;
+		margin: 0 auto;
+		padding: clamp(16px, 4vh, 48px) 16px 32px;
+	}
+	.hero {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		width: 100%;
+	}
+	.hero-art {
+		display: block;
+		width: min(760px, 100%);
+		height: auto;
+		aspect-ratio: 1600 / 533;
+		border-radius: 10px;
+		border: 2px solid rgba(170, 140, 255, 0.35);
+		box-shadow:
+			0 0 0 6px rgba(7, 5, 15, 0.6),
+			0 18px 60px rgba(124, 77, 255, 0.35);
+		image-rendering: pixelated;
+		animation: rise 600ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+	}
+	.tagline {
+		margin: 18px 0 0;
+		color: var(--ink);
+		font: 600 clamp(16px, 2.4vw, 22px) / 1.3 var(--font-pixel);
+		text-align: center;
+		text-shadow: 0 2px 0 #000;
+	}
+	.tagline em {
+		color: var(--gold);
+		font-style: normal;
+	}
+	.play-card {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		width: min(460px, 100%);
+		padding: 18px;
+		background: rgba(18, 12, 34, 0.9);
+		animation: rise 600ms 80ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+	}
+	.callsign {
+		display: grid;
+		gap: 6px;
+	}
+	input {
+		width: 100%;
+		min-width: 0;
+		min-height: 44px;
+		padding: 10px 12px;
+		color: var(--gold);
+		background: #0c0819;
+		border: 2px solid #3a2d6a;
+		border-radius: 6px;
+		outline: none;
+		font: 600 16px var(--font-pixel);
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+	}
+	input:focus {
+		border-color: var(--violet);
+		box-shadow: 0 0 0 3px rgba(141, 98, 255, 0.25);
+	}
+	input::placeholder {
+		color: #5c4f85;
+	}
+	.join {
+		min-height: 58px;
+		font-size: 18px;
+	}
+	.join-note {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		margin: -2px 0 2px;
+		color: var(--mint);
+		font: 600 11px var(--font-pixel);
+		letter-spacing: 0.08em;
+	}
+	.live-dot,
+	.status-pill i,
+	.lobby li i {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--mint);
+		box-shadow: 0 0 8px var(--mint);
+		animation: pulse 1.6s ease-in-out infinite;
+	}
+	.solo-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 10px;
+	}
+	.private-rooms summary {
+		color: var(--muted);
+		font: 600 12px var(--font-pixel);
+		letter-spacing: 0.08em;
+		text-align: center;
+		cursor: pointer;
+		list-style-position: inside;
+	}
+	.private-rooms summary:hover {
+		color: var(--ink);
+	}
+	.private-room-actions {
+		display: grid;
+		gap: 8px;
+		margin-top: 12px;
+		padding-top: 12px;
+		border-top: 1px solid var(--line);
+	}
+	.private-room-actions small {
+		color: var(--coral);
+		font: 600 10px/1.4 var(--font-pixel);
+		letter-spacing: 0.05em;
+		text-align: center;
+	}
+	.join-room {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: 8px;
+	}
+	.join-room input {
+		min-height: 36px;
+		padding-block: 6px;
+		font-size: 14px;
+		letter-spacing: 0.15em;
+	}
+	.lobby {
+		display: grid;
+		gap: 10px;
+		text-align: center;
+	}
+	.lobby-heading {
+		display: grid;
+		gap: 6px;
+	}
+	.lobby-heading strong {
+		color: var(--gold);
+		font: 700 32px var(--font-pixel);
+		letter-spacing: 0.16em;
+	}
+	.lobby ul {
+		display: grid;
+		gap: 4px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.lobby li {
+		display: grid;
+		grid-template-columns: auto 1fr auto;
+		align-items: center;
+		gap: 10px;
+		padding: 8px 10px;
+		background: rgba(255, 255, 255, 0.04);
+		border-radius: 4px;
+		font: 600 14px var(--font-pixel);
+		text-align: left;
+	}
+	.lobby li small {
+		color: var(--energy);
+		font-size: 11px;
+	}
+	.lobby p,
+	.overlay-actions p {
+		margin: 0;
+		color: var(--muted);
+		font-size: 14px;
+	}
+	.error {
+		margin: 0;
+		padding: 8px 10px;
+		color: #ffb3ba;
+		background: rgba(255, 77, 94, 0.12);
+		border: 1px solid rgba(255, 77, 94, 0.4);
+		border-radius: 4px;
+		font-size: 13px;
+	}
+	.how-to-play {
+		display: grid;
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+		gap: 10px;
+		width: 100%;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		animation: rise 600ms 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+	}
+	.how-to-play li {
+		display: flex;
+		gap: 10px;
+		align-items: flex-start;
+		padding: 12px;
+	}
+	.how-to-play strong {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 4px;
+		color: var(--ink);
+		font: 700 15px var(--font-pixel);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.how-to-play strong b {
+		color: var(--gold);
+	}
+	.how-to-play span:not(.sprite) {
+		color: var(--muted);
+		font-size: 13px;
+		line-height: 1.4;
+	}
+
+	/* ---------- HUD ---------- */
+	.hud-top {
+		position: absolute;
+		z-index: 6;
+		top: 0;
+		left: 0;
+		right: 0;
+		display: grid;
+		grid-template-columns: 1fr auto 1fr;
+		align-items: center;
+		gap: 12px;
+		padding: 12px 16px;
+		pointer-events: none;
+		background: linear-gradient(rgba(7, 5, 15, 0.75), transparent);
+	}
+	.hud-top > * {
+		pointer-events: auto;
+	}
+	.hud-left,
+	.hud-right {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		min-width: 0;
+	}
+	.hud-right {
+		grid-column: 3;
+		justify-content: flex-end;
+	}
+	.wordmark {
+		color: var(--gold);
+		font: 700 20px var(--font-pixel);
+		letter-spacing: 0.06em;
+		text-shadow:
+			0 2px 0 #7a3b12,
+			0 3px 0 #000;
+	}
+	.status-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 10px;
+		color: var(--muted);
+		background: rgba(18, 12, 34, 0.7);
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		font: 600 11px var(--font-pixel);
+		letter-spacing: 0.08em;
+		white-space: nowrap;
+	}
+	.status-pill.offline i {
+		background: var(--muted);
+		box-shadow: none;
+		animation: none;
+	}
+	.status-pill.training i {
+		background: var(--energy);
+		box-shadow: 0 0 8px var(--energy);
+	}
+	.round-clock {
+		grid-column: 2;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		padding: 4px 18px 6px;
+		background: rgba(18, 12, 34, 0.85);
+		border: 2px solid var(--line);
+		border-radius: 6px;
+	}
+	.round-clock span {
+		color: var(--muted);
+		font: 600 10px var(--font-pixel);
+		letter-spacing: 0.15em;
+	}
+	.round-clock strong {
+		font: 700 28px/1 var(--font-pixel);
+		font-variant-numeric: tabular-nums;
+	}
+	.round-clock.urgent strong {
+		color: var(--danger);
+		animation: pulse 1s steps(2) infinite;
+	}
+	.rank-chip {
+		display: none;
+		align-items: baseline;
+		gap: 4px;
+		min-height: 40px;
+		padding: 6px 12px;
+		color: var(--ink);
+		background: rgba(18, 12, 34, 0.85);
+		border: 2px solid var(--line);
+		border-radius: 6px;
+		font-family: var(--font-pixel);
+		cursor: pointer;
+	}
+	.rank-chip strong {
+		color: var(--gold);
+		font-size: 20px;
+	}
+	.rank-chip small {
+		color: var(--muted);
+		font-size: 11px;
+	}
+
+	.leaderboard {
+		position: absolute;
+		z-index: 5;
+		top: 84px;
+		right: 16px;
+		width: 236px;
+		overflow: hidden;
+	}
+	.panel-heading {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		padding: 10px 12px 8px;
+		border-bottom: 1px solid var(--line);
+	}
+	.panel-heading span {
+		color: var(--gold);
+		font: 700 13px var(--font-pixel);
+		letter-spacing: 0.08em;
+	}
+	.panel-heading small {
+		color: var(--muted);
+		font: 600 11px var(--font-pixel);
+	}
+	.leaders {
+		padding: 4px;
+	}
+	.leader-row {
+		display: grid;
+		grid-template-columns: 18px 10px 1fr auto;
+		align-items: center;
+		gap: 8px;
+		min-height: 30px;
+		padding: 0 8px;
+		border-radius: 4px;
+		font: 600 14px var(--font-pixel);
+		transition: background 200ms;
+	}
+	.leader-row b {
+		color: var(--muted);
+		font-weight: 600;
+		text-align: right;
+	}
+	.leader-row i,
+	.standings i {
+		display: inline-block;
+		width: 10px;
+		height: 10px;
+		border-radius: 2px;
+		background: var(--player-color);
+		box-shadow: 0 0 6px var(--player-color);
+	}
+	.leader-row span {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.leader-row strong {
+		color: var(--gold);
+		font-variant-numeric: tabular-nums;
+	}
+	.leader-row.you {
+		background: rgba(255, 227, 110, 0.14);
+		box-shadow: inset 2px 0 0 var(--you);
+	}
+	.leader-row.down span {
+		color: var(--muted);
+		text-decoration: line-through;
+	}
+	.arena-social {
+		display: grid;
+		gap: 6px;
+		padding: 10px;
+		border-top: 1px solid var(--line);
+	}
+	.arena-social a {
+		color: var(--energy);
+		font: 600 12px var(--font-pixel);
+		letter-spacing: 0.08em;
+		text-align: center;
+		text-decoration: none;
+	}
+	.arena-social a:hover {
+		text-decoration: underline;
+	}
+
+	.player-hud {
+		position: absolute;
+		z-index: 5;
+		left: 50%;
+		bottom: 18px;
+		transform: translateX(-50%);
+		display: grid;
+		grid-template-columns: 200px auto 200px;
+		align-items: stretch;
+		background: rgba(18, 12, 34, 0.88);
+	}
+	.player-hud.tutorial-hud {
+		grid-template-columns: repeat(3, auto);
+	}
+	.player-hud > div {
+		display: grid;
+		align-content: center;
+		gap: 6px;
+		padding: 10px 16px;
+	}
+	.player-hud > div + div {
+		border-left: 1px solid var(--line);
+	}
+	.heart-hud {
+		grid-template-columns: 1fr auto;
+	}
+	.heart-hud .meter,
+	.power-card .meter {
+		grid-column: 1 / -1;
+	}
+	.heart-hud strong {
+		font: 700 20px/1 var(--font-pixel);
+		font-variant-numeric: tabular-nums;
+	}
+	.heart-hud strong small {
+		color: var(--muted);
+		font-size: 13px;
+	}
+	.heart-hud.low strong {
+		color: var(--danger);
+	}
+	.heart-hud.low .meter em {
+		background: var(--danger);
+		animation: pulse 0.8s ease-in-out infinite;
 	}
 	.score-card {
-		display: grid;
-		grid-template-columns: auto auto;
-		align-items: center;
-		gap: 0 12px;
-		padding: 8px 18px;
-		border-right: 2px solid #31505a;
-		border-left: 2px solid #31505a;
+		justify-items: center;
+		min-width: 110px;
 	}
 	.score-card strong {
-		grid-row: 1 / 3;
-		grid-column: 2;
-		color: #ffe36e;
-		font: 1000 25px monospace;
-		text-shadow: 2px 2px #3b3424;
+		color: var(--gold);
+		font: 700 34px/1 var(--font-pixel);
+		font-variant-numeric: tabular-nums;
+		text-shadow: 0 2px 0 #7a3b12;
 	}
 	.score-card small {
-		font: 700 7px monospace;
-		color: #c7b39f;
+		color: var(--energy);
+		font: 600 10px var(--font-pixel);
+		letter-spacing: 0.08em;
 	}
 	.power-card {
-		width: auto;
-		padding: 9px 14px;
+		grid-template-columns: 1fr auto;
 	}
 	.power-card strong {
+		color: #6aa9b3;
+		font: 700 20px/1 var(--font-pixel);
+		font-variant-numeric: tabular-nums;
+	}
+	.power-card .meter em {
+		background: #3d7f8a;
+	}
+	.power-card .meter b {
 		position: absolute;
-		right: 10px;
-		top: 7px;
-		color: #64dce5;
-		font: 1000 17px monospace;
+		top: -1px;
+		bottom: -1px;
+		width: 2px;
+		background: rgba(255, 255, 255, 0.5);
 	}
-	.power-card em {
-		background: #64dce5;
+	.power-card.armed strong {
+		color: var(--energy);
+		text-shadow: 0 0 10px rgba(127, 243, 255, 0.6);
 	}
+	.power-card.armed .meter em {
+		background: var(--energy);
+		box-shadow: 0 0 10px var(--energy);
+	}
+
+	.callout,
 	.chain-status {
 		position: absolute;
 		z-index: 5;
 		left: 50%;
-		bottom: 88px;
+		bottom: 104px;
 		transform: translateX(-50%);
-		display: grid;
-		grid-template-columns: auto auto;
-		padding: 8px 12px;
-		background: #fff0ad;
-		color: #2a1c2d;
-		border: 4px solid #50303e;
-		box-shadow: 4px 4px 0 #120e17;
+		pointer-events: none;
 	}
-	.aim-callout {
-		position: absolute;
-		z-index: 5;
-		left: 50%;
-		top: auto;
-		bottom: 88px;
-		transform: translateX(-50%);
-		padding: 7px 10px;
-		color: #fff0ad;
-		background: #2c2030;
-		border: 3px solid #64dce5;
-		box-shadow: 3px 3px 0 #110d16;
-		font: 1000 9px monospace;
-		letter-spacing: 0.08em;
+	.callout {
+		padding: 9px 14px;
+		color: var(--energy);
+		background: rgba(18, 12, 34, 0.92);
+		border: 2px solid var(--energy);
+		border-radius: 6px;
+		font: 700 14px var(--font-pixel);
+		letter-spacing: 0.06em;
+		white-space: nowrap;
+		box-shadow: 0 0 20px rgba(127, 243, 255, 0.25);
 	}
-	.range-callout {
-		position: absolute;
-		z-index: 5;
-		left: 50%;
-		bottom: 24px;
-		transform: translateX(-50%);
-		padding: 8px 11px;
-		color: #dffcff;
-		background: rgba(7, 18, 27, 0.92);
-		border: 3px solid #64dce5;
-		box-shadow: 4px 4px 0 #110d16;
-		font: 1000 9px monospace;
-		letter-spacing: 0.08em;
+	.chain-status {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 8px 16px 8px 12px;
+		color: #2a1600;
+		background: var(--parchment);
+		border: 2px solid #fff;
+		border-radius: 6px;
+		box-shadow:
+			inset 0 -4px 0 rgba(0, 0, 0, 0.12),
+			0 4px 0 rgba(0, 0, 0, 0.4);
+		animation: pop 160ms ease-out;
+	}
+	.chain-status.grindstone {
+		background: linear-gradient(90deg, #ffd2cf, #fff3b0, #c9f7df, #c4f1f5, #e8d5f7);
 	}
 	.chain-status span {
-		grid-row: 1 / 3;
-		margin-right: 10px;
-		color: #d45150;
-		font: 1000 23px monospace;
+		color: #c2353f;
+		font: 700 32px/1 var(--font-pixel);
 	}
-	.chain-status strong,
+	.chain-status div {
+		display: grid;
+		gap: 3px;
+	}
+	.chain-status strong {
+		font: 700 15px/1 var(--font-pixel);
+		letter-spacing: 0.04em;
+	}
 	.chain-status small {
-		font: 900 8px monospace;
+		color: #6b5440;
+		font: 600 11px/1 var(--font-pixel);
+		letter-spacing: 0.04em;
 	}
+
 	.event-feed {
 		position: absolute;
 		z-index: 5;
-		right: 14px;
-		bottom: 15px;
+		left: 16px;
+		top: 50%;
+		transform: translateY(-50%);
 		display: flex;
 		flex-direction: column;
-		align-items: end;
+		gap: 6px;
+		pointer-events: none;
+	}
+	.feed-item {
+		padding: 7px 12px;
+		color: var(--ink);
+		background: rgba(18, 12, 34, 0.85);
+		border-left: 3px solid currentColor;
+		border-radius: 0 4px 4px 0;
+		font: 700 13px var(--font-pixel);
+		letter-spacing: 0.05em;
+		animation: slide-in 220ms ease-out;
+	}
+	.feed-item:nth-child(n + 3) {
+		opacity: 0.55;
+	}
+	.tone-gold {
+		color: var(--gold);
+	}
+	.tone-energy {
+		color: var(--energy);
+	}
+	.tone-coral {
+		color: var(--coral);
+	}
+	.tone-violet {
+		color: #c4a8ff;
+	}
+
+	.hint-strip {
+		padding: 10px 12px;
+		background: rgba(18, 12, 34, 0.72);
+		border-radius: 6px;
+		position: absolute;
+		z-index: 4;
+		left: 16px;
+		bottom: 18px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		color: var(--muted);
+		font: 600 12px var(--font-pixel);
+		pointer-events: none;
+	}
+	.hint-strip kbd {
+		min-width: 3.3em;
+		margin-right: 6px;
+	}
+
+	.tutorial-card {
+		position: absolute;
+		z-index: 6;
+		top: 72px;
+		left: 50%;
+		transform: translateX(-50%);
+		display: grid;
+		gap: 6px;
+		width: min(560px, calc(100% - 32px));
+		padding: 14px 18px 16px;
+		background: rgba(18, 12, 34, 0.92);
+		border-color: rgba(127, 243, 255, 0.35);
+	}
+	.lesson-meta {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+	}
+	.lesson-meta .label {
+		color: var(--energy);
+	}
+	.lesson-dots {
+		display: flex;
 		gap: 4px;
 	}
-	.event-feed div {
-		padding: 5px 7px;
-		color: #ffe36e;
-		background: #281d2b;
-		border: 3px solid currentColor;
-		font: 900 8px monospace;
+	.lesson-dots i {
+		width: 20px;
+		height: 5px;
+		border-radius: 2px;
+		background: rgba(255, 255, 255, 0.12);
 	}
-	.event-cyan {
-		color: #64dce5 !important;
+	.lesson-dots i.done {
+		background: var(--mint);
 	}
-	.event-coral {
-		color: #ff665f !important;
+	.lesson-dots i.current {
+		background: var(--energy);
+		box-shadow: 0 0 8px var(--energy);
 	}
-	.event-violet {
-		color: #c293e8 !important;
+	.tutorial-card h2 {
+		margin: 2px 0 0;
+		color: var(--gold);
+		font: 700 24px/1.1 var(--font-pixel);
+		text-transform: uppercase;
 	}
-	.respawn-overlay {
+	.tutorial-card p {
+		margin: 0;
+		color: var(--ink);
+		font-size: 15px;
+		line-height: 1.45;
+	}
+	.tutorial-card .btn {
+		justify-self: start;
+		margin-top: 4px;
+	}
+
+	/* ---------- help sheet ---------- */
+	.sheet-backdrop {
 		position: absolute;
-		z-index: 8;
+		inset: 0;
+		z-index: 20;
+		background: rgba(7, 5, 15, 0.6);
+	}
+	.help-sheet {
+		position: absolute;
+		z-index: 21;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		width: min(980px, calc(100% - 32px));
+		max-height: calc(100% - 32px);
+		overflow-y: auto;
+		padding: 18px 20px;
+		background: rgba(18, 12, 34, 0.97);
+		animation: pop 160ms ease-out;
+	}
+	.sheet-heading {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.sheet-heading h2 {
+		margin: 0;
+		color: var(--gold);
+		font: 700 26px var(--font-pixel);
+	}
+	.help-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+		gap: 20px;
+		margin-top: 12px;
+	}
+	.help-grid h3 {
+		margin: 0 0 10px;
+		color: var(--energy);
+		font: 700 14px var(--font-pixel);
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+	}
+	.rules {
+		display: grid;
+		gap: 10px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.rules li {
+		display: flex;
+		gap: 10px;
+	}
+	.rules strong {
+		display: block;
+		font: 700 14px var(--font-pixel);
+	}
+	.rules span:not(.sprite) {
+		color: var(--muted);
+		font-size: 13px;
+		line-height: 1.4;
+	}
+	.binds {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 8px 12px;
+		align-items: center;
+		margin: 0;
+		font-size: 13px;
+	}
+	.binds dt {
+		font: 600 13px var(--font-pixel);
+		white-space: nowrap;
+	}
+	.binds dd {
+		margin: 0;
+		color: var(--muted);
+	}
+	.numpad {
+		display: grid;
+		grid-template-columns: repeat(3, 34px);
+		gap: 4px;
+		margin-bottom: 12px;
+	}
+	.numpad kbd {
+		padding: 8px 0;
+		font-size: 14px;
+	}
+	.numpad kbd.bank {
+		color: #2a1600;
+		background: var(--gold);
+		border-color: #c78a1c;
+	}
+	.risk-note {
+		margin: 18px 0 0;
+		padding: 10px 12px;
+		color: var(--muted);
+		background: rgba(255, 77, 94, 0.08);
+		border-left: 3px solid var(--coral);
+		border-radius: 0 4px 4px 0;
+		font-size: 13px;
+		line-height: 1.5;
+	}
+	.risk-note strong {
+		color: var(--coral);
+	}
+
+	/* ---------- overlays ---------- */
+	.overlay {
+		position: absolute;
+		z-index: 15;
 		inset: 0;
 		display: grid;
 		place-items: center;
-		padding: 24px;
+		padding: 16px;
+		overflow-y: auto;
+		background: rgba(7, 5, 15, 0.72);
+		backdrop-filter: blur(4px) saturate(0.6);
+		-webkit-backdrop-filter: blur(4px) saturate(0.6);
+		animation: fade 220ms ease-out;
+	}
+	.overlay.respawn {
 		background:
-			radial-gradient(circle at 50% 45%, rgba(89, 36, 53, 0.45), transparent 44%),
-			rgba(5, 10, 17, 0.82);
-		backdrop-filter: blur(3px) saturate(0.65);
+			radial-gradient(circle at 50% 45%, rgba(255, 77, 94, 0.18), transparent 50%),
+			rgba(7, 5, 15, 0.78);
 	}
-	.respawn-overlay::before,
-	.respawn-overlay::after {
-		content: '';
-		position: absolute;
-		left: 0;
-		width: 100%;
-		height: 4px;
-		background: repeating-linear-gradient(90deg, #ff665f 0 36px, transparent 36px 52px);
-		opacity: 0.65;
-	}
-	.respawn-overlay::before {
-		top: 0;
-	}
-	.respawn-overlay::after {
-		bottom: 0;
-	}
-	.respawn-card {
-		position: relative;
-		width: min(440px, 100%);
-		padding: 28px 30px 25px;
+	.overlay-card {
+		width: min(460px, 100%);
+		padding: 26px 24px 22px;
 		text-align: center;
-		color: #f8edce;
-		background: #231a27;
-		border: 4px solid #5d3545;
-		border-top-color: #ff665f;
-		box-shadow:
-			8px 8px 0 #080a10,
-			inset 0 0 0 2px rgba(255, 102, 95, 0.08);
+		background: rgba(18, 12, 34, 0.96);
+		animation: pop 220ms cubic-bezier(0.2, 0.9, 0.3, 1.3);
 	}
-	.respawn-card h2 {
-		margin: 7px 0 20px;
-		color: #fff0ad;
-		font: 1000 clamp(27px, 5vw, 42px)/1 monospace;
-		letter-spacing: -0.06em;
+	.overlay-card.wide {
+		width: min(560px, 100%);
+	}
+	.respawn .overlay-card {
+		border-color: rgba(255, 77, 94, 0.5);
+		border-top: 4px solid var(--danger);
+	}
+	.eyebrow {
+		color: var(--energy);
+		font: 600 12px var(--font-pixel);
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+	}
+	.eyebrow.danger {
+		color: var(--coral);
+	}
+	.overlay-card h2 {
+		margin: 6px 0 18px;
+		color: var(--parchment);
+		font: 700 clamp(30px, 6vw, 44px) / 1 var(--font-pixel);
 		text-shadow:
-			3px 3px #8c3444,
-			5px 5px #100d14;
+			0 3px 0 #7a1f2e,
+			0 5px 0 #000;
 	}
-	.shatter-mark {
-		position: relative;
-		width: 48px;
-		height: 48px;
-		margin: -52px auto 17px;
-		transform: rotate(45deg);
-		background: #ff665f;
-		border: 4px solid #3e2431;
-		box-shadow: 4px 4px 0 #090a0f;
+	.results .overlay-card h2 {
+		color: var(--gold);
+		text-shadow:
+			0 3px 0 #7a3b12,
+			0 5px 0 #000;
 	}
-	.shatter-mark span,
-	.shatter-mark i,
-	.shatter-mark b {
-		position: absolute;
-		display: block;
-		width: 5px;
-		height: 28px;
-		background: #fff0ad;
-	}
-	.shatter-mark span {
-		left: 19px;
-		top: 6px;
-		transform: rotate(-12deg);
-	}
-	.shatter-mark i {
-		left: 12px;
-		top: 13px;
-		height: 18px;
-		transform: rotate(54deg);
-	}
-	.shatter-mark b {
-		left: 27px;
-		top: 14px;
-		height: 15px;
-		transform: rotate(61deg);
-	}
-	.death-penalty {
+	.stat-row {
 		display: grid;
 		grid-template-columns: repeat(3, 1fr);
-		margin-bottom: 20px;
-		border: 2px solid #49303d;
+		margin-bottom: 18px;
+		border: 1px solid var(--line);
+		border-radius: 6px;
 	}
-	.death-penalty div {
+	.stat-row div {
 		min-width: 0;
-		padding: 11px 8px;
-		border-right: 2px solid #49303d;
+		padding: 10px 6px;
 	}
-	.death-penalty div:last-child {
-		border: 0;
+	.stat-row div + div {
+		border-left: 1px solid var(--line);
 	}
-	.death-penalty span,
+	.stat-row span,
 	.respawn-status span {
 		display: block;
-		color: #a99591;
-		font: 900 7px monospace;
-		letter-spacing: 0.1em;
+		color: var(--muted);
+		font: 600 10px var(--font-pixel);
+		letter-spacing: 0.08em;
 	}
-	.death-penalty strong {
+	.stat-row strong {
 		display: block;
-		margin-top: 5px;
-		color: #ff7a76;
-		font: 1000 15px monospace;
+		margin-top: 6px;
+		font: 700 20px var(--font-pixel);
 	}
-	.death-penalty div:nth-child(2) strong {
-		color: #ffe36e;
+	.danger {
+		color: var(--danger);
 	}
-	.death-penalty div:nth-child(3) strong {
-		color: #64dce5;
-		font-size: 10px;
+	.gold {
+		color: var(--gold);
+	}
+	.energy {
+		color: var(--energy);
+	}
+	.stat-row strong.energy {
+		font-size: 15px;
 	}
 	.respawn-status > div {
 		display: flex;
@@ -2191,617 +2821,297 @@
 		text-align: left;
 	}
 	.respawn-status strong {
-		color: #fff0ad;
-		font: 1000 24px monospace;
+		color: var(--parchment);
+		font: 700 28px var(--font-pixel);
 	}
-	.respawn-status > i {
-		display: block;
-		height: 10px;
-		padding: 2px;
-		background: #0e1820;
-		border: 2px solid #466269;
+	.respawn-status .meter {
+		height: 12px;
 	}
-	.respawn-status em {
-		display: block;
-		height: 100%;
-		background: repeating-linear-gradient(90deg, #64dce5 0 16px, #3cb4c1 16px 20px);
+	.respawn-status .meter em {
+		background: repeating-linear-gradient(90deg, var(--energy) 0 14px, #3cb4c1 14px 18px);
 		transition: width 50ms linear;
 	}
-	.respawn-card p {
-		margin: 13px 0 0;
-		color: #9eb6ac;
-		font: 700 9px/1.5 monospace;
+	.overlay-card p {
+		margin: 14px 0 0;
+		color: var(--muted);
+		font-size: 14px;
 	}
-	.start-overlay {
-		position: absolute;
-		z-index: 9;
-		inset: 0;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		padding: 32px;
-		text-align: center;
-		background: radial-gradient(circle at 50% 35%, #2c5360 0, #152b38 45%, #0b1420 100%);
+	.placement {
+		margin: -8px 0 14px !important;
+		font: 600 16px var(--font-pixel) !important;
 	}
-	.start-overlay::before {
-		content: '';
-		position: absolute;
-		inset: 0;
-		opacity: 0.14;
-		background-image:
-			linear-gradient(45deg, #fff 25%, transparent 25%),
-			linear-gradient(-45deg, #fff 25%, transparent 25%);
-		background-size: 8px 8px;
+	.placement strong {
+		color: var(--gold);
 	}
-	.start-overlay > * {
-		position: relative;
-	}
-	.crest {
-		width: 70px;
-		height: 70px;
-		margin-bottom: 20px;
-		font-size: 40px;
-		transform: rotate(-3deg);
-	}
-	.eyebrow {
-		color: #64dce5;
-		font: 900 9px monospace;
-		letter-spacing: 0.18em;
-	}
-	.start-overlay h1 {
-		margin: 8px 0 12px;
-		color: #fff0ad;
-		font: 1000 clamp(50px, 9vw, 84px)/0.85 monospace;
-		letter-spacing: -0.09em;
-		text-shadow:
-			5px 5px #6c3046,
-			8px 8px #1f1723;
-	}
-	.start-overlay h1 span {
-		color: #ffe36e;
-	}
-	.start-overlay p {
-		max-width: 440px;
-		color: #d8d1b6;
-		font: 700 12px/1.6 monospace;
-	}
-	.title-actions {
-		display: flex;
-		gap: 10px;
-		margin-top: 12px;
-	}
-	.online-setup {
-		width: min(520px, 100%);
-		margin-top: 14px;
-		padding: 12px;
-		background: rgb(8 16 25 / 72%);
-		border: 2px solid #466269;
-	}
-	.online-setup label {
-		display: grid;
-		grid-template-columns: auto 1fr;
-		align-items: center;
-		gap: 10px;
-		text-align: left;
-	}
-	.online-setup label span,
-	.online-setup > small,
-	.lobby-card span {
-		color: #64dce5;
-		font: 900 8px monospace;
-		letter-spacing: 0.12em;
-	}
-	.online-setup > small {
-		display: block;
-		margin-top: 9px;
-		color: #ff8b81;
-	}
-	.online-setup input {
-		min-width: 0;
-		padding: 10px;
-		color: #fff0ad;
-		background: #101c28;
-		border: 2px solid #466269;
-		outline: none;
-		font: 900 11px monospace;
-		text-transform: uppercase;
-	}
-	.online-setup input:focus {
-		border-color: #64dce5;
-	}
-	.online-actions {
-		margin-top: 9px;
-	}
-	.public-arena-button {
+	.standings {
 		width: 100%;
-		padding-block: 16px;
-		font-size: 12px;
+		border-collapse: collapse;
+		font: 600 14px var(--font-pixel);
+		font-variant-numeric: tabular-nums;
 	}
-	.online-actions > small {
-		display: block;
-		margin-top: 8px;
-		color: #64dce5;
-		font: 900 7px monospace;
-		letter-spacing: 0.14em;
-	}
-	.join-room {
-		display: grid;
-		grid-template-columns: minmax(0, 0.65fr) minmax(0, 1.35fr);
-		gap: 8px;
-	}
-	.join-room input {
-		letter-spacing: 0.12em;
-	}
-	.join-room button {
+	.standings th {
+		padding: 6px 8px;
+		color: var(--muted);
 		font-size: 11px;
+		letter-spacing: 0.08em;
+		text-align: right;
+		border-bottom: 1px solid var(--line);
 	}
-	.host-room-option {
-		margin-top: 14px;
+	.standings td {
+		padding: 6px 8px;
+		text-align: right;
 	}
-	.host-room-option summary {
-		color: #80958f;
-		font: 900 8px monospace;
-		letter-spacing: 0.12em;
-		cursor: pointer;
-	}
-	.private-room-actions {
-		display: grid;
-		gap: 10px;
-		margin-top: 10px;
-		padding-top: 10px;
-		border-top: 1px solid #466269;
-	}
-	.host-room-option button {
-		width: 100%;
-	}
-	.solo-divider {
-		display: flex;
-		align-items: center;
-		width: min(420px, 90%);
-		margin-top: 12px;
-		color: #80958f;
-		font: 900 7px monospace;
-		letter-spacing: 0.16em;
-	}
-	.solo-divider::before,
-	.solo-divider::after {
-		content: '';
-		flex: 1;
-		height: 1px;
-		margin: 0 10px;
-		background: #466269;
-	}
-	.lobby-card {
-		width: min(430px, 100%);
-		margin-top: 18px;
-		padding: 16px;
-		background: rgb(8 16 25 / 82%);
-		border: 3px solid #64dce5;
-		box-shadow: 5px 5px 0 #110d16;
-	}
-	.lobby-card > div:first-child {
-		display: grid;
-		gap: 3px;
-	}
-	.lobby-card > div strong {
-		color: #ffe36e;
-		font: 1000 32px monospace;
-		letter-spacing: 0.18em;
-	}
-	.lobby-card ul {
-		display: grid;
-		gap: 5px;
-		margin: 12px 0;
-		padding: 0;
-		list-style: none;
-	}
-	.lobby-card li {
-		display: grid;
-		grid-template-columns: auto 1fr auto;
-		align-items: center;
-		gap: 8px;
-		padding: 7px 9px;
-		color: #fff0ad;
-		background: #152532;
-		font: 900 10px monospace;
+	.standings th:nth-child(2),
+	.standings td:nth-child(2) {
 		text-align: left;
 	}
-	.lobby-card li i {
-		width: 7px;
-		height: 7px;
-		background: #5ee6a8;
-		box-shadow: 0 0 7px #5ee6a8;
+	.standings td:nth-child(2) i {
+		margin-right: 8px;
 	}
-	.lobby-card li small {
-		color: #64dce5;
-		font-size: 7px;
+	.standings td:first-child {
+		color: var(--muted);
 	}
-	.lobby-card button:not(.text-button) {
-		width: 100%;
+	.standings td:nth-child(3) {
+		color: var(--gold);
 	}
-	.lobby-card p {
-		margin: 10px auto;
-		font-size: 9px;
+	.standings tr.you td {
+		background: rgba(255, 227, 110, 0.12);
 	}
-	.lobby-error {
-		margin: 10px 0 0 !important;
-		color: #ff8b81 !important;
-		font-size: 9px !important;
-	}
-	button {
-		padding: 13px 15px;
-		color: #281d2b;
-		background: #ffe36e;
-		border: 4px solid #4b2533;
-		box-shadow: 4px 4px 0 #110d16;
-		font: 1000 10px monospace;
-		letter-spacing: 0.07em;
-		cursor: pointer;
-	}
-	button:disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
-	}
-	button:hover {
-		transform: translate(-1px, -1px);
-		box-shadow: 6px 6px 0 #110d16;
-	}
-	button.secondary {
-		color: #fff2cd;
-		background: #d34e52;
-	}
-	button.text-button {
-		padding: 8px;
-		color: #9eb6ac;
-		background: transparent;
-		border: 0;
-		box-shadow: none;
-	}
-	.start-overlay.compact h1 {
-		font-size: 44px;
-	}
-	.tutorial-card {
-		display: grid;
-		grid-template-columns: 1fr auto;
-		align-items: center;
-		gap: 8px 20px;
-		width: 100%;
-		min-height: 76px;
-		margin-bottom: 10px;
-		padding: 10px 14px;
-		color: #2a1c2d;
-		background: #fff0ad;
-		border: 4px solid #4b2f3d;
-		box-shadow: 5px 5px 0 #110e17;
-	}
-	.tutorial-card > div:first-child > span {
-		color: #b1454b;
-		font: 1000 8px monospace;
-		letter-spacing: 0.13em;
-	}
-	.tutorial-card h2 {
-		margin: 3px 0;
-		font: 1000 20px monospace;
-		text-transform: uppercase;
-	}
-	.tutorial-card p {
-		margin: 0;
-		font: 700 10px/1.4 monospace;
-	}
-	.lesson-dots {
-		display: flex;
-		gap: 4px;
-		margin: 0;
-	}
-	.lesson-dots i {
-		width: 22px;
-		height: 4px;
-		background: #c6ab88;
-	}
-	.lesson-dots i.done {
-		background: #d34e52;
-	}
-	.lesson-dots i.current {
-		background: #2f7b78;
-	}
-	.tutorial-card button {
-		grid-column: 2;
-		padding: 9px 12px;
-	}
-	.quick-controls {
+	.overlay-actions {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 7px 12px;
-		padding: 12px 2px 0;
-		color: #9eb6ac;
-		font: 800 8px monospace;
+		justify-content: center;
+		align-items: center;
+		gap: 10px;
+		margin-top: 18px;
 	}
+
+	/* ---------- touch ---------- */
 	.mobile-controls {
-		position: sticky;
-		z-index: 10;
-		bottom: max(6px, env(safe-area-inset-bottom));
+		position: absolute;
+		z-index: 8;
+		left: 0;
+		right: 0;
+		bottom: 0;
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 7px;
-		padding: 8px 0 max(4px, env(safe-area-inset-bottom));
-		background: linear-gradient(transparent, #0b141f 28%);
-	}
-	.mobile-controls button {
-		min-width: 0;
-		min-height: 52px;
-		padding: 8px 6px;
-		color: #fff0ad;
-		background: #302333;
-		border-width: 3px;
-		box-shadow: 3px 3px 0 #080b11;
-		font-size: 9px;
-		touch-action: manipulation;
-	}
-	.mobile-controls button.active {
-		color: #17212a;
-		background: #64dce5;
-		border-color: #fff0ad;
-	}
-	.mobile-controls .parry-control {
-		color: #281d2b;
-		background: #ffe36e;
+		gap: 8px;
+		padding: 24px 10px max(10px, env(safe-area-inset-bottom));
+		background: linear-gradient(transparent, rgba(7, 5, 15, 0.92) 35%);
 	}
 	.mobile-conversion {
 		display: grid;
-		grid-column: span 2;
 		grid-template-columns: 1fr 1fr;
-		gap: 5px;
+		padding: 3px;
+		background: rgba(18, 12, 34, 0.9);
+		border: 2px solid var(--line);
+		border-radius: 8px;
 	}
-	kbd {
-		padding: 3px 5px;
-		color: #fff0ad;
-		background: #2c2030;
-		border: 2px solid #573b4d;
-		font: inherit;
-	}
-	.side-panel {
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-	.side-panel section,
-	.risk-note {
-		overflow: hidden;
-		color: #f7edce;
-		background: #332432;
-		border: 4px solid #1b151f;
-		box-shadow: 4px 4px 0 #0c0b10;
-	}
-	.panel-heading {
-		display: flex;
-		justify-content: space-between;
-		padding: 11px 12px;
-		background: #523241;
-		border-bottom: 4px solid #1b151f;
-	}
-	.panel-heading span,
-	.risk-note > span {
-		color: #ffe36e;
-		font: 1000 9px monospace;
-		letter-spacing: 0.1em;
-	}
-	.panel-heading small {
-		color: #b9a99b;
-		font: 700 8px monospace;
-	}
-	.leaders {
-		padding: 5px;
-	}
-	.leader-row {
+	.mobile-actions {
 		display: grid;
-		grid-template-columns: 23px 7px 1fr auto;
-		align-items: center;
+		grid-auto-flow: column;
+		grid-auto-columns: 1fr;
 		gap: 8px;
-		min-height: 37px;
-		padding: 0 7px;
-		color: #d9ceb5;
-		font: 800 10px monospace;
 	}
-	.leader-row b {
-		color: #856c73;
-	}
-	.leader-row i {
-		width: 7px;
-		height: 7px;
-		background: var(--player-color);
-	}
-	.leader-row strong {
-		color: #ffe36e;
-	}
-	.leader-row.you {
-		color: #2a1c2d;
-		background: #ffe36e;
-	}
-	.leader-row.you b,
-	.leader-row.you strong {
-		color: #2a1c2d;
-	}
-	.rule-panel ol {
-		list-style: none;
-		margin: 0;
-		padding: 5px 12px 9px;
-	}
-	.rule-panel li {
-		display: grid;
-		grid-template-columns: 25px 1fr;
-		gap: 7px;
-		padding: 11px 0;
-		border-bottom: 2px dashed #5e4150;
-	}
-	.rule-panel li:last-child {
+	.mobile-controls button {
+		min-width: 0;
+		min-height: 44px;
+		padding: 8px 6px;
+		color: var(--muted);
+		background: transparent;
 		border: 0;
+		border-radius: 6px;
+		font: 700 14px var(--font-pixel);
+		letter-spacing: 0.05em;
+		touch-action: manipulation;
 	}
-	.rule-panel li > b {
-		color: #d34e52;
-		font: 1000 15px monospace;
+	.mobile-conversion button.active {
+		color: #2a1600;
+		background: var(--gold);
+		box-shadow: inset 0 -3px 0 #c78a1c;
 	}
-	.rule-panel li div {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
+	.mobile-conversion button:last-child.active {
+		background: var(--energy);
+		box-shadow: inset 0 -3px 0 #2a9aa8;
 	}
-	.rule-panel li strong {
-		color: #64dce5;
-		font: 1000 10px monospace;
+	.mobile-actions button {
+		min-height: 56px;
+		color: var(--ink);
+		background: #2b2150;
+		border: 2px solid #4a3a85;
+		box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.3);
+		font-size: 16px;
 	}
-	.rule-panel li span {
-		color: #b9ad9c;
-		font: 700 9px/1.45 monospace;
+	.mobile-actions button:active {
+		transform: translateY(2px);
 	}
-	.risk-note {
-		padding: 13px;
+	.mobile-actions .aim-control.active {
+		color: #062026;
+		background: var(--energy);
+		border-color: #fff;
 	}
-	.risk-note p {
-		margin: 7px 0 0;
-		color: #b9ad9c;
-		font: 700 9px/1.55 monospace;
+	.mobile-actions .parry-control {
+		color: #2a1600;
+		background: var(--gold);
+		border-color: #ffefa8;
+		box-shadow: inset 0 -4px 0 #c78a1c;
 	}
-	@media (max-width: 850px) {
-		.play-layout {
-			grid-template-columns: minmax(0, 620px);
-		}
-		.side-panel {
+
+	/* ---------- responsive ---------- */
+	@media (max-width: 1100px) {
+		.hint-strip {
 			display: none;
 		}
-		.arena-frame {
-			min-height: 500px;
-			height: 72dvh;
-		}
-		.server-state {
-			display: none;
-		}
-		.topbar {
-			grid-template-columns: 1fr auto;
-		}
 	}
-	@media (max-width: 520px) {
-		.shell {
-			padding: 4px 6px max(6px, env(safe-area-inset-bottom));
+	@media (max-width: 860px) {
+		.how-to-play {
+			grid-template-columns: 1fr 1fr;
 		}
-		.topbar {
-			height: 48px;
-			margin-bottom: 6px;
-		}
-		.brand-mark {
-			width: 30px;
-			height: 30px;
-		}
-		.brand-lockup strong {
-			font-size: 14px;
-		}
-		.training-progress {
-			font-size: 7px;
-		}
-		.arena-frame {
-			height: calc(100dvh - 190px);
-			min-height: 400px;
-			max-height: none;
-			border-width: 3px;
-		}
-		.tutorial-layout .arena-frame {
-			height: calc(100dvh - 240px);
-		}
-		.title-actions {
-			flex-direction: column;
+		.wordmark {
+			display: none;
 		}
 		.player-hud {
-			top: 8px;
-			width: calc(100% - 16px);
-			grid-template-columns: 1fr auto 1fr;
-		}
-		.heart-hud,
-		.power-card {
-			padding-inline: 8px;
-		}
-		.score-card {
-			padding-inline: 10px;
-		}
-		.tutorial-card {
-			grid-template-columns: 1fr;
-			gap: 6px;
-			min-height: 0;
-			margin-bottom: 6px;
-			padding: 9px 10px;
-			border-width: 3px;
-		}
-		.tutorial-card h2 {
-			font-size: 17px;
-		}
-		.tutorial-card p {
-			font-size: 9px;
-		}
-		.tutorial-card button {
-			grid-column: 1;
-		}
-		.quick-controls {
-			display: none;
-		}
-		.mobile-controls {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
-		.mobile-conversion {
-			grid-column: 1 / -1;
-		}
-		.start-overlay {
-			justify-content: flex-start;
-			overflow-y: auto;
-			padding: 20px 14px;
-		}
-		.start-overlay h1 {
-			font-size: 46px;
-		}
-		.start-overlay .crest {
-			width: 46px;
-			height: 46px;
-			margin-bottom: 10px;
-			font-size: 27px;
-		}
-		.online-actions {
-			width: 100%;
-		}
-		.join-room {
-			grid-template-columns: 1fr;
-		}
-		.lobby-card > div strong {
-			font-size: 25px;
-		}
-		.respawn-overlay {
-			padding: 16px;
-		}
-		.respawn-card {
-			padding: 25px 14px 18px;
-			border-width: 3px;
-		}
-		.respawn-card h2 {
-			margin-bottom: 15px;
-			font-size: 29px;
-		}
-		.shatter-mark {
-			margin-top: -47px;
-		}
-		.death-penalty {
-			margin-bottom: 15px;
-		}
-		.death-penalty div {
-			padding-inline: 4px;
-		}
-		.death-penalty strong {
-			font-size: 13px;
+			grid-template-columns: 150px auto 150px;
 		}
 	}
-	@media (max-height: 600px) and (pointer: coarse) {
-		.arena-frame {
-			height: 72dvh;
-			min-height: 350px;
+	.touch .hud-top {
+		padding: 8px 10px;
+		gap: 8px;
+	}
+	.touch .status-pill {
+		display: none;
+	}
+	.touch .round-clock {
+		padding: 2px 12px 4px;
+	}
+	.touch .round-clock strong {
+		font-size: 22px;
+	}
+	.touch .solo-row kbd {
+		display: none;
+	}
+	.touch .rank-chip {
+		display: inline-flex;
+	}
+	.touch .leaderboard {
+		top: 64px;
+		right: 10px;
+		display: none;
+	}
+	.touch .leaderboard.open {
+		display: block;
+		z-index: 9;
+	}
+	.touch .player-hud {
+		top: 60px;
+		bottom: auto;
+		width: calc(100% - 20px);
+		grid-template-columns: 1fr auto 1fr;
+	}
+	.touch .player-hud.tutorial-hud {
+		width: auto;
+		grid-template-columns: repeat(3, auto);
+	}
+	.touch .player-hud > div {
+		padding: 8px 10px;
+	}
+	.touch .score-card {
+		min-width: 70px;
+	}
+	.touch .score-card strong {
+		font-size: 26px;
+	}
+	.touch .heart-hud strong,
+	.touch .power-card strong {
+		font-size: 17px;
+	}
+	.touch .heart-hud strong small {
+		display: none;
+	}
+	.touch .event-feed {
+		top: auto;
+		bottom: 150px;
+		left: 10px;
+		transform: none;
+	}
+	.touch .feed-item {
+		font-size: 11px;
+	}
+	.touch .callout,
+	.touch .chain-status {
+		bottom: 150px;
+	}
+	.touch .tutorial-card {
+		top: 60px;
+		width: calc(100% - 20px);
+		padding: 10px 12px 12px;
+	}
+	.touch .player-hud.tutorial-hud {
+		top: auto;
+		bottom: 214px;
+	}
+	.touch .tutorial-card h2 {
+		font-size: 19px;
+	}
+	.touch .tutorial-card p {
+		font-size: 13px;
+	}
+	.touch .chain-status span {
+		font-size: 26px;
+	}
+	@media (max-width: 520px) {
+		.title-column {
+			gap: 16px;
 		}
-		.topbar {
+		.how-to-play {
+			grid-template-columns: 1fr;
+		}
+		.play-card {
+			padding: 14px;
+		}
+		.stat-row strong {
+			font-size: 17px;
+		}
+		.standings {
+			font-size: 13px;
+		}
+		.standings th:nth-child(5),
+		.standings td:nth-child(5) {
 			display: none;
+		}
+	}
+
+	@keyframes rise {
+		from {
+			opacity: 0;
+			transform: translateY(14px);
+		}
+	}
+	@keyframes pop {
+		from {
+			opacity: 0;
+			scale: 0.94;
+		}
+	}
+	@keyframes fade {
+		from {
+			opacity: 0;
+		}
+	}
+	@keyframes slide-in {
+		from {
+			opacity: 0;
+			transform: translateX(-12px);
+		}
+	}
+	@keyframes pulse {
+		50% {
+			opacity: 0.45;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		* {
+			animation: none !important;
+			transition: none !important;
 		}
 	}
 </style>
