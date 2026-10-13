@@ -10,7 +10,7 @@ continuously replenishing board. Players route through connected monsters to
 build chains, then convert each completed chain into either permanent Score or
 temporary combat Power.
 
-Score makes a player gradually tougher and extends their reach. Power can be
+Score makes a player gradually tougher. Power can be
 spent on a single, all-in projectile. Projectiles travel through the arena and
 can be dodged or nullified with a well-timed parry. Firing leaves the attacker
 without enough Power to defend until they build another Power chain.
@@ -36,7 +36,7 @@ player's route easier to predict. A chain has no value until it is committed.
 
 ### Leaders are powerful, not invincible
 
-Score increases reach and maximum health logarithmically, while also reducing
+Score increases maximum health logarithmically, while also reducing
 Power-generation efficiency. A smaller player cannot match a leader's board
 control, but can recharge faster and can nullify any attack with a correctly
 timed parry.
@@ -81,7 +81,7 @@ Each player has:
 - `score`: persistent progression within the current match
 - `health`: current survivability
 - `maxHealth`: derived logarithmically from Score
-- `reach`: maximum legal chain distance, derived logarithmically from Score
+- `reach`: legacy snapshot field; does not limit chain paths
 - `power`: stored combat resource
 - `cellId`: the square-grid cell currently occupied by the player
 - `chain`: the player's current uncommitted route, if any
@@ -96,7 +96,8 @@ player can attack or parry and when a recent attacker is defenseless.
 
 The arena places monsters and players on one shared, visually aligned square
 grid. A chain must begin on one of the eight cells surrounding the player's
-current cell, then may continue through orthogonal or diagonal neighbors. A
+current cell, then may continue through orthogonal or diagonal neighbors without
+a distance cap from the starting cell. A
 committed chain is the player's only source of movement: the avatar traverses
 the chosen route and ends on its final cell. Aiming and projectile motion remain
 continuous and are not snapped to the grid.
@@ -176,8 +177,6 @@ Score has diminishing returns. Exact constants must be determined through
 simulation and playtesting, but the intended family of formulas is:
 
 ```text
-reach(score) = baseReach + reachScale * ln(1 + score / reachScoreScale)
-
 maxHealth(score) = baseHealth + healthScale * ln(1 + score / scoreScale)
 
 powerEfficiency(score) = 1 / (1 + handicapScale * ln(1 + score / scoreScale))
@@ -337,7 +336,7 @@ server-authoritative regardless of implementation technology.
 ### Server responsibilities
 
 - Own the canonical match clock and simulation state.
-- Derive player movement exclusively from validated chain commits and Reach.
+- Derive player movement exclusively from validated chain commits.
 - Validate chain adjacency, color, and monster availability.
 - Resolve chain commits atomically and truncate conflicting provisional chains.
 - Convert chains into Score or Power using shared tuning formulas.

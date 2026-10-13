@@ -89,8 +89,7 @@ export function createBotController(seed = 1): BotController {
 							(monster) =>
 								monster.alive &&
 								canExtendWithColor(chainColors, monster.color, state.config.grindstoneStreak) &&
-								!player.chain.includes(monster.id) &&
-								distance(player.position, monster.position) <= player.reach
+								!player.chain.includes(monster.id)
 						)
 						.sort((a, b) => a.id.localeCompare(b.id));
 					if (candidates.length && (player.chain.length < 6 || random.value > 0.4))

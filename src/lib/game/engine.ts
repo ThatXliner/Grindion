@@ -191,8 +191,6 @@ function tryAddMonster(
 		!previous.neighborIds.includes(monster.id)
 	)
 		return;
-	// Reach is the player's leash from their stationary chaining position.
-	if (distance(player.position, monster.position) > player.reach) return;
 	player.chain.push(monsterId);
 }
 

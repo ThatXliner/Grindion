@@ -135,6 +135,32 @@ describe('game engine', () => {
 		expect(result.state.players.a!.chain).toEqual(['m0', 'm1', 'm2', 'm18']);
 	});
 
+	it('extends and banks an adjacent path beyond the starting reach', () => {
+		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
+		const route = ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'];
+		const origin = state.arena.monsters.m16!;
+		state.players.a!.cellId = origin.id;
+		state.players.a!.position = { ...origin.position };
+		origin.alive = false;
+		for (const id of route) state.arena.monsters[id]!.color = 'coral';
+		expect(
+			Math.hypot(
+				state.arena.monsters.m7!.position.x - origin.position.x,
+				state.arena.monsters.m7!.position.y - origin.position.y
+			)
+		).toBeGreaterThan(state.players.a!.reach);
+		let result = stepGame(state, [
+			{ type: 'chain-start', playerId: 'a', monsterId: route[0]! },
+			...route
+				.slice(1)
+				.map((monsterId) => ({ type: 'chain-extend' as const, playerId: 'a', monsterId }))
+		]);
+		expect(result.state.players.a!.chain).toEqual(route);
+		result = stepGame(result.state, [{ type: 'chain-commit', playerId: 'a', conversion: 'score' }]);
+		expect(result.state.players.a!.cellId).toBe('m7');
+		expect(result.state.players.a!.score).toBe(chainValue(route.length));
+	});
+
 	it('builds and banks a valid same-color chain', () => {
 		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
 		const chain = connectedChain(state);

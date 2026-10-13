@@ -21,7 +21,7 @@
 
 Grindion is a competitive `.io` puzzle-combat game played on one continuously replenishing monster field. Drag through matching creatures to move and build a chain, then make the choice that drives the whole game:
 
-- **Bank Score** to grow tougher, heal, and reach farther.
+- **Bank Score** to grow tougher and heal.
 - **Forge Power** to arm one dodgeable, parryable, all-in projectile.
 
 Firing empties your entire Power reserve. If the shot misses—or gets parried—you have just announced to the arena that you cannot defend. Long chains are lucrative, but they also make your route obvious and lock you out of attacking or parrying until you commit or cancel.
@@ -34,7 +34,7 @@ Firing empties your entire Power reserve. If the shot misses—or gets parried�
 | System                 | The interesting decision                                                               |
 | ---------------------- | -------------------------------------------------------------------------------------- |
 | **Shared chains**      | Route greedily through one live board while rivals compete for the same monsters.      |
-| **Score vs. Power**    | Invest in lasting reach and health, or trade the chain for immediate threat.           |
+| **Score vs. Power**    | Invest in lasting health, or trade the chain for immediate threat.                     |
 | **Rainbow Grindstone** | Chain five of one color to unlock a one-use switch into any adjacent color.            |
 | **All-in shots**       | Every projectile spends the full reserve, turning each attack into a commitment.       |
 | **Timing parries**     | A well-timed defense nullifies any shot, regardless of how powerful the attacker is.   |
