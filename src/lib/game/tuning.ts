@@ -35,6 +35,14 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = Object.freeze({
 	deathScoreLoss: 0.2
 });
 
+/** A larger board for live arenas: 24×18 cells at the default cell size. */
+export const LIVE_ARENA_CONFIG: Readonly<Partial<GameConfig>> = Object.freeze({
+	width: 1710,
+	height: 1305,
+	monsterColumns: 24,
+	monsterCount: 432
+});
+
 export function growthForScore(score: number, config: GameConfig = DEFAULT_CONFIG): number {
 	return Math.log1p(Math.max(0, score) / config.scoreScale);
 }

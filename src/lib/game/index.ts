@@ -11,6 +11,7 @@ export { createGame, stepGame, FixedStepGame } from './engine';
 export { createBotController, type BotController } from './bots';
 export {
 	DEFAULT_CONFIG,
+	LIVE_ARENA_CONFIG,
 	growthForScore,
 	reachForScore,
 	maxHealthForScore,

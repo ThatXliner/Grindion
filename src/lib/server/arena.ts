@@ -1,5 +1,6 @@
 import { createGame, stepGame } from '../game/engine';
 import { createBotController } from '../game/bots';
+import { LIVE_ARENA_CONFIG } from '../game/tuning';
 import type { GameEvent, GameIntent, GameState } from '../game/types';
 
 /** One server-owned arena, including human seats and the bots filling every empty seat. */
@@ -16,7 +17,8 @@ export class ArenaRoom {
 				id: `bot-${i + 1}`,
 				name: `Bot ${i + 1}`,
 				isBot: true
-			}))
+			})),
+			config: LIVE_ARENA_CONFIG
 		});
 	}
 
@@ -68,7 +70,7 @@ export class ArenaRoom {
 				name,
 				isBot
 			}));
-			this.state = createGame({ seed: this.state.seed + 1, players });
+			this.state = createGame({ seed: this.state.seed + 1, players, config: this.state.config });
 			this.bots.reset();
 			this.intents = [];
 			this.endedForMs = 0;

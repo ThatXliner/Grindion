@@ -11,6 +11,7 @@
 		createChainMotionTiming,
 		createGame,
 		grindstoneState,
+		LIVE_ARENA_CONFIG,
 		maxHealthForScore,
 		powerGain,
 		stepGame
@@ -309,7 +310,7 @@
 				name: `Bot ${index + 1}`,
 				isBot: true
 			})),
-			config: { roundDurationMs: 3_600_000 }
+			config: { ...LIVE_ARENA_CONFIG, roundDurationMs: 3_600_000 }
 		});
 		humanId = '';
 		attractBots.reset();
@@ -323,7 +324,7 @@
 		game = createGame({
 			seed: Math.floor(Math.random() * 2 ** 30),
 			botCount: 7,
-			config: roundDurationMs ? { roundDurationMs } : {}
+			config: roundDurationMs ? { ...LIVE_ARENA_CONFIG, roundDurationMs } : LIVE_ARENA_CONFIG
 		});
 		humanId = Object.values(game.players).find((player) => !player.isBot)?.id ?? 'player';
 		botController.reset();
