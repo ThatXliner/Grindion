@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { ArenaRoom } from '../src/lib/server/arena';
+import { compactSnapshot } from '../src/lib/online/snapshot';
 import { cleanPlayerName, isGameIntent } from '../src/lib/supabase/realtimeRoom';
 import type { GameEvent } from '../src/lib/game/types';
 
@@ -17,12 +18,16 @@ const server = createServer((request, response) => {
 const wss = new WebSocketServer({ server, path: '/arena', maxPayload: 4096 });
 
 function send(socket: WebSocket, value: unknown) {
+	sendRaw(socket, JSON.stringify(value));
+}
+
+function sendRaw(socket: WebSocket, payload: string) {
 	if (socket.readyState !== WebSocket.OPEN) return;
 	if (socket.bufferedAmount > 1_000_000) {
 		socket.terminate();
 		return;
 	}
-	socket.send(JSON.stringify(value));
+	socket.send(payload);
 }
 
 wss.on('connection', (socket, request) => {
@@ -106,14 +111,19 @@ setInterval(() => {
 		const result = room.arena.tick();
 		room.events.push(...result.events);
 		if (!result.restarted && room.arena.state.tick % 2) continue;
-		for (const [socket, playerId] of room.clients)
-			send(socket, {
-				type: result.restarted ? 'start' : 'snapshot',
+		if (result.restarted) {
+			for (const [socket, playerId] of room.clients)
+				send(socket, { type: 'start', code, playerId, state: room.arena.state });
+		} else {
+			// The board itself went out with `start`; snapshots carry only what changes.
+			const payload = JSON.stringify({
+				type: 'snapshot',
 				code,
-				playerId,
-				state: room.arena.state,
+				state: compactSnapshot(room.arena.state),
 				events: room.events
 			});
+			for (const socket of room.clients.keys()) sendRaw(socket, payload);
+		}
 		room.events = [];
 	}
 }, 50);

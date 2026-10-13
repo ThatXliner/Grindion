@@ -1,4 +1,5 @@
 import type { GameEvent, GameIntent, GameState } from '../game/types';
+import { expandSnapshot } from './snapshot';
 
 type Callbacks = {
 	onStart: (state: GameState, playerId: string, code: string) => void;
@@ -19,6 +20,7 @@ export class ArenaClient {
 		const client = new ArenaClient(socket);
 		return new Promise((resolve, reject) => {
 			let started = false;
+			let board: GameState['arena'] | null = null;
 			const timeout = setTimeout(() => {
 				client.disconnect();
 				reject(new Error('Arena connection timed out. Try again.'));
@@ -28,9 +30,11 @@ export class ArenaClient {
 				if (value.type === 'start') {
 					clearTimeout(timeout);
 					started = true;
+					board = value.state.arena;
 					callbacks.onStart(value.state, value.playerId, value.code);
 					resolve(client);
-				} else if (value.type === 'snapshot') callbacks.onSnapshot(value.state, value.events ?? []);
+				} else if (value.type === 'snapshot' && board)
+					callbacks.onSnapshot(expandSnapshot(value.state, board), value.events ?? []);
 			};
 			socket.onclose = (event) => {
 				clearTimeout(timeout);
