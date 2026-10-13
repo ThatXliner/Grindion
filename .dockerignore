@@ -1,0 +1,11 @@
+.git
+.github
+.svelte-kit
+build
+node_modules
+test-results
+.env
+.env.*
+!.env.example
+
+build-server

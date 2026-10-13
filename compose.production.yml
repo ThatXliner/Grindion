@@ -1,0 +1,32 @@
+name: grindion
+
+services:
+  arena:
+    build:
+      context: .
+      target: arena-server
+    container_name: grindion-arena
+    restart: unless-stopped
+
+  matchmaker:
+    build:
+      context: .
+      target: matchmaker
+    container_name: grindion-matchmaker
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      args:
+        PUBLIC_SUPABASE_URL: ${PUBLIC_SUPABASE_URL}
+        PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+    container_name: grindion-web
+    restart: unless-stopped
+    depends_on:
+      arena:
+        condition: service_healthy
+      matchmaker:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:${GRINDION_HTTP_PORT:-8087}:80
