@@ -42,13 +42,43 @@ function directionTo(from: Vec2, to: Vec2): Vec2 {
 	return normalize({ x: to.x - from.x, y: to.y - from.y });
 }
 
-/** Deterministic 8 Hz bot brains. They only produce public GameIntents. */
-export function createBotController(seed = 1): BotController {
+export interface BotDifficulty {
+	/** Milliseconds between decisions; each decision adds at most one monster to a chain. */
+	thinkMs: number;
+	/** Chance per decision to fire at a target within `fireRange`. */
+	fireChance: number;
+	fireRange: number;
+	/** Largest aim error either side of the target, in radians. */
+	aimError: number;
+	/** Chance to parry a shot the bot notices in time. */
+	parryChance: number;
+}
+
+/** Forgiving defaults: slow routes, rare and inaccurate shots, unreliable parries. */
+export const DEFAULT_BOT_DIFFICULTY: Readonly<BotDifficulty> = Object.freeze({
+	thinkMs: 300,
+	fireChance: 0.12,
+	fireRange: 520,
+	aimError: 0.22,
+	parryChance: 0.35
+});
+
+/** Deterministic bot brains. They only produce public GameIntents. */
+export function createBotController(
+	seed = 1,
+	difficulty: Partial<BotDifficulty> = {}
+): BotController {
+	const tuning = { ...DEFAULT_BOT_DIFFICULTY, ...difficulty };
 	let lastUpdateMs = -Infinity,
 		randomState = seed | 0 || 1;
+	const roll = () => {
+		const next = randomFrom(randomState);
+		randomState = next.state;
+		return next.value;
+	};
 	return {
 		update(state) {
-			if (state.timeMs - lastUpdateMs < 125 || state.roundEnded) return [];
+			if (state.timeMs - lastUpdateMs < tuning.thinkMs || state.roundEnded) return [];
 			lastUpdateMs = state.timeMs;
 			const intents: GameIntent[] = [];
 			for (const player of Object.values(state.players)
@@ -77,7 +107,7 @@ export function createBotController(seed = 1): BotController {
 					player.power >= state.config.parryMinimum &&
 					state.timeMs >= player.parryCooldownUntilMs
 				) {
-					intents.push({ type: 'parry', playerId: player.id });
+					if (roll() < tuning.parryChance) intents.push({ type: 'parry', playerId: player.id });
 					continue;
 				}
 				if (player.chain.length) {
@@ -115,13 +145,18 @@ export function createBotController(seed = 1): BotController {
 				if (
 					target &&
 					player.power >= 30 &&
-					distance(player.position, target.position) < 650 &&
-					random.value > 0.72
+					distance(player.position, target.position) < tuning.fireRange &&
+					roll() < tuning.fireChance
 				) {
+					const aim = directionTo(player.position, target.position);
+					const error = (roll() * 2 - 1) * tuning.aimError;
 					intents.push({
 						type: 'fire',
 						playerId: player.id,
-						direction: directionTo(player.position, target.position)
+						direction: {
+							x: aim.x * Math.cos(error) - aim.y * Math.sin(error),
+							y: aim.x * Math.sin(error) + aim.y * Math.cos(error)
+						}
 					});
 					continue;
 				}

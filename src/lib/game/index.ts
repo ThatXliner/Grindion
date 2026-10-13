@@ -4,11 +4,16 @@
  * - `createGame` creates a serializable authoritative snapshot.
  * - `stepGame` immutably advances one fixed step from intents.
  * - `FixedStepGame` adapts variable render-frame deltas to the 20 Hz simulation.
- * - `createBotController` emits ordinary player intents at 8 Hz.
+ * - `createBotController` emits ordinary player intents at a tunable cadence.
  * - tuning helpers are shared by UI previews and authoritative simulation.
  */
 export { createGame, stepGame, FixedStepGame } from './engine';
-export { createBotController, type BotController } from './bots';
+export {
+	createBotController,
+	DEFAULT_BOT_DIFFICULTY,
+	type BotController,
+	type BotDifficulty
+} from './bots';
 export {
 	DEFAULT_CONFIG,
 	LIVE_ARENA_CONFIG,
