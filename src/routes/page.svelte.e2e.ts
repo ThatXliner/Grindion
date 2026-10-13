@@ -34,7 +34,7 @@ test('offers immediate online play with legacy private rooms hidden', async ({ p
 	await expect(page.getByText('PLAY NOW · BOTS FILL EMPTY SEATS')).toBeVisible();
 	await expect(page.getByLabel('Private room code')).toBeHidden();
 	await expect(page.getByRole('button', { name: 'CREATE PRIVATE ROOM' })).toBeHidden();
-	await page.getByText('PRIVATE ROOMS').click();
+	await page.getByText('PRIVATE ROOMS', { exact: true }).click();
 	await expect(page.getByLabel('Private room code')).toBeVisible();
 	const onlineEnabled = await page.getByRole('button', { name: 'JOIN PRIVATE' }).isEnabled();
 	await expect(page.getByRole('button', { name: 'JOIN PRIVATE' })).toBeEnabled({
