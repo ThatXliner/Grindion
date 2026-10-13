@@ -14,20 +14,6 @@ ENV PUBLIC_SUPABASE_PUBLISHABLE_KEY=$PUBLIC_SUPABASE_PUBLISHABLE_KEY
 
 RUN npm run build && npm run build:arena
 
-FROM node:22-alpine AS matchmaker
-
-WORKDIR /app
-
-COPY deploy/matchmaker.mjs ./matchmaker.mjs
-
-USER node
-EXPOSE 8787
-
-HEALTHCHECK --interval=15s --timeout=3s --start-period=3s --retries=3 \
-	CMD wget --quiet --spider http://127.0.0.1:8787/health || exit 1
-
-CMD ["node", "matchmaker.mjs"]
-
 FROM node:22-alpine AS arena-server
 WORKDIR /app
 COPY --from=build /app/build-server/arena-server.cjs ./arena-server.cjs
