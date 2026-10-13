@@ -8,13 +8,15 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
-		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.server.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"test:unit": "vitest",
 		"test": "npm run test:unit -- --run && npm run test:e2e",
-		"test:e2e": "playwright install && playwright test"
+		"test:e2e": "playwright install && playwright test",
+		"build:arena": "esbuild deploy/arena-server.ts --bundle --platform=node --format=cjs --external:ws --outfile=build-server/arena-server.cjs",
+		"start:arena": "node build-server/arena-server.cjs"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
@@ -25,6 +27,8 @@
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@tailwindcss/vite": "^4.3.0",
 		"@types/node": "^22",
+		"@types/ws": "8.18.2",
+		"esbuild": "0.28.2",
 		"eslint": "^10.4.1",
 		"eslint-config-prettier": "^10.1.8",
 		"eslint-plugin-svelte": "^3.19.0",
@@ -42,6 +46,7 @@
 		"vitest": "^4.1.8"
 	},
 	"dependencies": {
-		"@supabase/supabase-js": "2.110.7"
+		"@supabase/supabase-js": "2.110.7",
+		"ws": "8.22.0"
 	}
 }

@@ -1,5 +1,27 @@
 import { expect, test } from '@playwright/test';
 
+test('offers immediate online play with legacy private rooms hidden', async ({ page }) => {
+	await page.goto('/');
+
+	await expect(page.getByLabel('CALLSIGN')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'JOIN ONLINE ARENA ⚡' })).toBeEnabled();
+	await expect(page.getByText('PLAY NOW · BOTS FILL EMPTY SEATS')).toBeVisible();
+	await expect(page.getByLabel('Private room code')).toBeHidden();
+	await expect(page.getByRole('button', { name: 'CREATE PRIVATE ROOM' })).toBeHidden();
+	await page.getByText('PRIVATE ROOMS').click();
+	await expect(page.getByLabel('Private room code')).toBeVisible();
+	const onlineEnabled = await page.getByRole('button', { name: 'JOIN PRIVATE' }).isEnabled();
+	await expect(page.getByRole('button', { name: 'JOIN PRIVATE' })).toBeEnabled({
+		enabled: onlineEnabled
+	});
+	await expect(page.getByRole('button', { name: 'CREATE PRIVATE ROOM' })).toBeEnabled({
+		enabled: onlineEnabled
+	});
+	await expect(
+		page.getByText('ADD THE TWO PUBLIC SUPABASE ENV VARS TO ENABLE PRIVATE ROOMS')
+	).toBeVisible({ visible: !onlineEnabled });
+});
+
 test('starts a live arena and spends all Power on a shot', async ({ page }) => {
 	await page.goto('/');
 	await expect(page.getByRole('heading', { name: 'GRINDION' })).toBeVisible();
@@ -69,9 +91,9 @@ test('offers a deterministic guided tutorial', async ({ page }) => {
 	await expect(page.locator('.score-card')).toBeVisible();
 	await expect(page.locator('.power-card')).toHaveCount(0);
 	await page.mouse.up();
-	await expect(page.getByRole('heading', { name: 'Read your reach' })).toBeVisible();
-	await expect(page.getByText('DASHED RING = CURRENT REACH')).toBeVisible();
-	await expect(page.locator('.score-card')).toContainText('RANGE');
+	await expect(page.getByRole('heading', { name: 'Grow tougher' })).toBeVisible();
+	await expect(page.getByText('ADJACENT PATHS · UNLIMITED DISTANCE')).toBeVisible();
+	await expect(page.locator('.score-card')).toContainText('NO PATH LIMIT');
 	await expect(page.locator('.power-card')).toHaveCount(0);
 	await page.getByRole('button', { name: 'BUILD POWER →' }).click();
 	await expect(page.getByRole('heading', { name: 'Charge Power' })).toBeVisible();
@@ -103,7 +125,7 @@ test('starts, chains, revises, and banks with zero pointer input', async ({ page
 	await expect(page.locator('.chain-status span')).toHaveText('3×');
 
 	await page.keyboard.press('5');
-	await expect(page.getByRole('heading', { name: 'Read your reach' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Grow tougher' })).toBeVisible();
 	await expect(page.locator('.score-card strong')).toHaveText('3');
 });
 
@@ -213,4 +235,36 @@ test('shows a responsive death recap until the authoritative respawn', async ({ 
 		() => document.documentElement.scrollWidth > window.innerWidth
 	);
 	expect(hasHorizontalOverflow).toBe(false);
+});
+
+test('plays immediately with bots, admits a friend mid-round, and keeps playing after departure', async ({
+	browser,
+	page
+}) => {
+	await page.goto('/');
+	await page.getByLabel('CALLSIGN').fill('Alice');
+	await page.getByRole('button', { name: 'JOIN ONLINE ARENA ⚡' }).click();
+	await expect(page.getByText('ARENA SERVER LIVE', { exact: true })).toBeVisible();
+	await expect(page.locator('.leader-row').filter({ hasText: 'Bot' })).toHaveCount(7);
+	const link = await page.getByRole('link', { name: /^ARENA / }).getAttribute('href');
+	expect(link).toContain('?arena=');
+	await expect.poll(() => page.locator('.round-clock strong').innerText()).not.toBe('5:00');
+	const friend = await browser.newPage();
+	await friend.goto(new URL(link!, page.url()).href);
+	await friend.getByLabel('CALLSIGN').fill('Bob');
+	await friend.getByRole('button', { name: 'JOIN ONLINE ARENA ⚡' }).click();
+	await expect(friend.getByText('ARENA SERVER LIVE', { exact: true })).toBeVisible();
+	await expect(page.locator('.leader-row').filter({ hasText: 'Bob' })).toBeVisible();
+	await expect(friend.locator('.leader-row').filter({ hasText: 'Alice' })).toBeVisible();
+	await expect(page.locator('.leader-row').filter({ hasText: 'Bot' })).toHaveCount(6);
+	await expect(friend.locator('.round-clock strong')).not.toHaveText('5:00');
+	await friend.keyboard.press('Space');
+	await expect(friend.locator('.power-card strong')).toHaveText('10');
+	await page.close();
+	await expect(friend.locator('.leader-row').filter({ hasText: 'Bot' })).toHaveCount(7);
+	await expect(friend.getByText('ARENA SERVER LIVE', { exact: true })).toBeVisible();
+	await expect(friend.locator('.leader-row')).toHaveCount(8);
+	await friend.getByRole('button', { name: 'LEAVE ARENA' }).click();
+	await expect(friend.getByRole('heading', { name: 'GRINDION' })).toBeVisible();
+	await friend.close();
 });

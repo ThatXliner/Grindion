@@ -3,7 +3,17 @@ import { defineConfig } from 'vitest/config';
 import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 
+const arenaProxy = {
+	'/api/arena': {
+		target: `http://127.0.0.1:${process.env.ARENA_PORT ?? 8788}`,
+		ws: true,
+		rewrite: (path: string) => path.replace('/api/arena', '/arena')
+	}
+};
+
 export default defineConfig({
+	server: { proxy: arenaProxy },
+	preview: { proxy: arenaProxy },
 	plugins: [
 		tailwindcss(),
 		sveltekit({

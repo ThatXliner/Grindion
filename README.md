@@ -27,7 +27,7 @@ Grindion is a competitive `.io` puzzle-combat game played on one continuously re
 Firing empties your entire Power reserve. If the shot misses—or gets parried—you have just announced to the arena that you cannot defend. Long chains are lucrative, but they also make your route obvious and lock you out of attacking or parrying until you commit or cancel.
 
 > [!NOTE]
-> This repository is a **playable, desktop-first vertical slice**: a fixed-seed seven-lesson tutorial plus a five-minute arena against seven bots. Real-time human multiplayer is the next architectural step, not a feature being claimed today.
+> This repository is a **playable, desktop-first vertical slice**: a fixed-seed seven-lesson tutorial, a five-minute solo arena, and instant online play in a server-owned arena. Empty seats are filled by bots; friends can join mid-round through an arena link. Legacy Supabase private room codes remain available for direct challenges.
 
 ## Why it hits
 
@@ -73,31 +73,31 @@ Open the local URL printed by Vite, then start with **Play Tutorial** or jump di
 4. Spend Power on a predicted shot—or save enough to parry.
 5. Never forget: while you are chaining, you are vulnerable; after you fire, you are empty.
 
-## Built like a multiplayer game, even before multiplayer
+## Realtime multiplayer architecture
 
-The rules live in a deterministic, fixed-step TypeScript simulation. The Svelte client renders snapshots on canvas and submits intent objects—the same boundary a future authoritative match worker can consume.
+The online arena runs the same deterministic TypeScript engine on `big-mac` at 20 Hz and sends WebSocket snapshots and events at 10 Hz. Browsers submit actions; the server assigns each connection its own player ID and advances all humans and bots.
 
-```text
-Pointer / keyboard
-       │
-       ▼
-  player intents ──► deterministic game step ──► events + snapshot
-                              │                         │
-                              │                         ▼
-                              └──────────────► canvas, HUD, audio-ready hooks
+Click **Join Online Arena** to enter an available eight-player arena immediately. A human replaces one bot, and a disconnected player's seat returns to bot control. **Invite Friends** copies a link to that specific running arena. Full public arenas create another arena; a full friend-linked arena reports that it is full. Five-minute rounds automatically restart after a three-second results screen. Empty arenas keep running for one minute before cleanup.
 
-Supabase: profiles + match metadata + final results
-Future match worker: movement + chains + combat + authoritative state
+Online play does not require Supabase. The existing Supabase transport is retained only for legacy private challenges. Solo play and the tutorial run locally.
+
+To run online play locally, start the arena worker in another terminal:
+
+```bash
+npm run build:arena
+npm run start:arena
 ```
 
-This split keeps per-frame combat out of Postgres and Presence, while preserving Supabase for the durable data it is good at. The local game remains fully functional when Supabase is not configured.
+Vite proxies `/api/arena` to the worker on port 8788. Production uses the `arena` and `web` services in `compose.production.yml`, with Nginx forwarding WebSocket upgrades.
 
 ## Project map
 
 ```text
 src/
 ├── lib/game/              deterministic rules, bots, tutorial, tuning, tests
-├── lib/supabase/          optional browser client boundary
+├── lib/server/            server-owned arenas, bot seats, round lifecycle
+├── lib/online/            browser WebSocket client
+├── lib/supabase/          browser client + Presence/Broadcast room protocol
 └── routes/+page.svelte    canvas renderer, HUD, input, tutorial presentation
 
 static/assets/             banner and original pixel-art sprite sheets
@@ -121,7 +121,7 @@ The suite covers deterministic engine rules, bot behavior, chain conflicts, the 
 
 GitHub Actions runs the quality, unit, browser, and production-build checks on every pull request and every push to `main`. Failed browser runs retain a Playwright HTML report for 14 days.
 
-## Optional Supabase setup
+## Supabase Realtime setup
 
 Copy the example environment file and add the browser-safe values for your project:
 
@@ -136,6 +136,8 @@ PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-publishable-key
 
 Never expose a secret or service-role key through `PUBLIC_*`.
 
+Restart Vite after adding the values. Supabase enables the legacy **Private Rooms** flow for direct challenges by six-character code. **Join Online Arena** uses the standalone arena worker and needs no Supabase configuration.
+
 For a local Supabase stack (Docker required):
 
 ```bash
@@ -144,11 +146,11 @@ npx supabase db reset
 npx supabase status
 ```
 
-Use the API URL and publishable/anon key reported by `supabase status`. Client-facing writes are protected by RLS; final results intentionally have no client write policy and are reserved for the future authoritative game service.
+Use the API URL and publishable/anon key reported by `supabase status`. The existing metadata tables remain protected by RLS; Realtime gameplay does not write per-tick state to those tables.
 
 ## Current frontier
 
-The prototype has the core loop, bots, tutorial, readable combat, progression curves, death/respawn, leaderboard, and tests. The big next moves are server-authoritative live matches, network snapshot interpolation, mobile/controller input, matchmaking, and another hard round of tuning.
+The prototype has the core loop, bots, tutorial, public matchmaking, private rooms, readable combat, progression curves, death/respawn, leaderboard, and tests. The big next moves are private-channel authentication for legacy rooms, snapshot interpolation, controller input, larger shared arenas, and another hard round of tuning.
 
 If you are changing rules, keep the simulation deterministic, add the engine-level test first, and update [`GAME_DESIGN.md`](./GAME_DESIGN.md) when the design contract changes.
 

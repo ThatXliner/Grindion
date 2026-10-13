@@ -321,8 +321,9 @@ a necessary escape or engagement tool.
 
 ## 13. Technical architecture
 
-No engine or networking stack has been selected. The architecture should remain
-server-authoritative regardless of implementation technology.
+Public arenas now run in a dedicated worker on `big-mac`. It advances the deterministic simulation at 20 Hz and sends WebSocket snapshots at 10 Hz. Joining replaces a bot with a fresh human, leaving returns the seat to bot control, and the eight-seat arena continues independently of browser lifetimes. Arena links support joining an existing round. Rounds restart automatically after three seconds; arenas without clients are retired after one minute.
+
+The legacy private-room stack uses Supabase Realtime Presence for room rosters and Broadcast for intents, snapshots, and events. One browser hosts these private challenges only. Guests submit compact intents.
 
 ### Client responsibilities
 

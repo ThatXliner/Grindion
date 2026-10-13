@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { resolve } from '$app/paths';
+	import { ArenaClient } from '$lib/online/arenaClient';
 	import { SvelteMap } from 'svelte/reactivity';
 	import {
 		arenaGridMetrics,
@@ -10,7 +12,6 @@
 		createGame,
 		grindstoneState,
 		maxHealthForScore,
-		reachForScore,
 		sampleChainMotion,
 		stepGame
 	} from '$lib/game';
@@ -22,6 +23,15 @@
 		Monster,
 		PlayerState
 	} from '$lib/game';
+	import { getSupabaseBrowserClient, isSupabaseConfigured } from '$lib/supabase/client';
+	import {
+		cleanPlayerName,
+		createRoomCode,
+		normalizeRoomCode,
+		playerSetupsForRoster,
+		RealtimeRoom
+	} from '$lib/supabase/realtimeRoom';
+	import type { RoomConnectionState, RoomMember, RoomRole } from '$lib/supabase/realtimeRoom';
 
 	type Point = { x: number; y: number };
 	type ChainAnimation = {
@@ -35,6 +45,7 @@
 	type HumanIntent = WithoutPlayer<GameIntent>;
 	type GameMode = 'title' | 'arena' | 'tutorial';
 	type DeathRecap = { killerName: string; scoreLost: number };
+	type LobbyStatus = 'idle' | 'connecting' | 'lobby';
 
 	const TUTORIAL_STEPS = [
 		{
@@ -49,8 +60,8 @@
 			mobileCopy: 'Release to claim Score and land on the final creature.'
 		},
 		{
-			title: 'Read your reach',
-			copy: 'The dashed ring is your reach. Banking Score expands it and max health logarithmically: early points help most.'
+			title: 'Grow tougher',
+			copy: 'Paths have no distance limit. Banking Score increases max health logarithmically: early points help most.'
 		},
 		{
 			title: 'Charge Power',
@@ -98,6 +109,22 @@
 	let tutorialStep = $state(0);
 	let tutorialShotAt = 0;
 	let tutorialRouteIds = $state<string[]>([]);
+	let lobbyStatus = $state<LobbyStatus>('idle');
+	let lobbyRole = $state<RoomRole | null>(null);
+	let lobbyMembers = $state<RoomMember[]>([]);
+	let lobbyError = $state('');
+	let roomCode = $state('');
+	let joinCode = $state('');
+	let playerName = $state('Wanderer');
+	let localPlayerId = $state('');
+	let publicArena = $state(false);
+	let multiplayerRoom: RealtimeRoom | null = null;
+	let serverArena = $state<ArenaClient | null>(null);
+	let sharedArenaUrl = $state('');
+	let shareMessage = $state('');
+	let remoteIntents: GameIntent[] = [];
+	let pendingNetworkEvents: GameEvent[] = [];
+	let lastPublishedTimeMs = -Infinity;
 	const NORMAL_VIEW_WIDTH = 570;
 	const AIM_VIEW_WIDTH = 680;
 	const MOBILE_VIEW_WIDTH = 460;
@@ -179,7 +206,6 @@
 	const maxHealth = $derived(me?.maxHealth ?? maxHealthForScore(me?.score ?? 0));
 	const health = $derived(Math.max(0, me?.health ?? maxHealth));
 	const power = $derived(Math.max(0, me?.power ?? 0));
-	const reach = $derived(me?.reach ?? reachForScore(me?.score ?? 0));
 	const chainLength = $derived(me?.chain.length ?? 0);
 	const isDead = $derived(me?.mode === 'dead');
 	const respawnRemainingMs = $derived(
@@ -243,9 +269,183 @@
 	}
 
 	function startArena() {
+		lobbyRole = null;
 		game = createGame({ seed: Math.floor(Math.random() * 2 ** 30), botCount: 7 });
 		humanId = Object.values(game.players).find((player) => !player.isBot)?.id ?? 'player';
 		startSession('arena');
+	}
+
+	function onRoomConnection(state: RoomConnectionState, message?: string) {
+		if (state === 'error') lobbyError = message ?? 'Realtime connection failed.';
+		if (state === 'disconnected' && multiplayerRoom && mode === 'arena') {
+			isRunning = false;
+			lobbyError = message ?? 'The multiplayer room disconnected.';
+		}
+	}
+
+	function acceptRemoteStart(state: GameState) {
+		if (!localPlayerId || !state.players[localPlayerId]) {
+			lobbyError = 'That round is already in progress. Join the next room.';
+			return;
+		}
+		humanId = localPlayerId;
+		game = state;
+		startSession('arena');
+	}
+
+	function acceptRemoteSnapshot(state: GameState, events: GameEvent[]) {
+		if (!game || state.tick < game.tick) return;
+		game = state;
+		for (const event of events) addEvent(event);
+		if (state.roundEnded || state.timeMs >= state.roundEndsAtMs) isRunning = false;
+	}
+
+	async function joinOnlineArena() {
+		if (lobbyStatus === 'connecting') return;
+		lobbyStatus = 'connecting';
+		lobbyError = '';
+		try {
+			localStorage.setItem('grindion-player-name', cleanPlayerName(playerName));
+			const code = new URL(window.location.href).searchParams.get('arena') ?? '';
+			serverArena = await ArenaClient.connect(cleanPlayerName(playerName), code, {
+				onStart: (state, playerId, code) => {
+					humanId = playerId;
+					lobbyRole = 'guest';
+					roomCode = code;
+					publicArena = true;
+					game = state;
+					sharedArenaUrl = new URL(`/?arena=${code}`, window.location.href).href;
+					startSession('arena');
+				},
+				onSnapshot: acceptRemoteSnapshot,
+				onDisconnect: (message) => {
+					isRunning = false;
+					lobbyError = message;
+				}
+			});
+			lobbyStatus = 'lobby';
+		} catch (error) {
+			lobbyStatus = 'idle';
+			lobbyError = error instanceof Error ? error.message : 'Could not join the arena.';
+		}
+	}
+
+	async function shareArena() {
+		try {
+			await navigator.clipboard.writeText(sharedArenaUrl);
+			shareMessage = 'LINK COPIED';
+		} catch {
+			shareMessage = 'USE THE ARENA LINK';
+		}
+	}
+
+	async function connectRoom(
+		role: RoomRole,
+		requestedCode?: string,
+		isPublicMatch = false
+	): Promise<boolean> {
+		lobbyError = '';
+		const supabase = getSupabaseBrowserClient();
+		if (!supabase) {
+			lobbyError = 'Online play needs PUBLIC_SUPABASE_URL and PUBLIC_SUPABASE_PUBLISHABLE_KEY.';
+			return false;
+		}
+		const code = requestedCode
+			? normalizeRoomCode(requestedCode)
+			: role === 'host'
+				? createRoomCode()
+				: normalizeRoomCode(joinCode);
+		if (code.length !== 6) {
+			lobbyError = 'Enter the full six-character room code.';
+			return false;
+		}
+		lobbyStatus = 'connecting';
+		localStorage.setItem('grindion-player-name', cleanPlayerName(playerName));
+		lobbyRole = role;
+		lobbyMembers = [];
+		roomCode = code;
+		publicArena = isPublicMatch;
+		try {
+			const connectedRoom = await RealtimeRoom.connect({
+				supabase,
+				code,
+				playerId: localPlayerId,
+				name: cleanPlayerName(playerName),
+				role,
+				callbacks: {
+					onConnection: onRoomConnection,
+					onRoster: (members) => {
+						lobbyMembers = members;
+						if (
+							role === 'guest' &&
+							lobbyStatus === 'lobby' &&
+							!members.some((member) => member.role === 'host')
+						) {
+							lobbyError = 'The host left this room.';
+							if (mode === 'arena') isRunning = false;
+						}
+					},
+					onIntent: (intent) => remoteIntents.push(intent),
+					onStart: acceptRemoteStart,
+					onSnapshot: acceptRemoteSnapshot
+				}
+			});
+			multiplayerRoom = connectedRoom;
+			if (role === 'guest') {
+				await new Promise((resolve) => setTimeout(resolve, 900));
+				if (!connectedRoom.members.some((member) => member.role === 'host')) {
+					await connectedRoom.disconnect();
+					throw new Error('No host is present in that room.');
+				}
+			}
+			playerName = connectedRoom.member.name;
+			lobbyStatus = 'lobby';
+			return true;
+		} catch (error) {
+			multiplayerRoom = null;
+			lobbyStatus = 'idle';
+			lobbyRole = null;
+			lobbyMembers = [];
+			publicArena = false;
+			lobbyError = error instanceof Error ? error.message : 'Could not join the room.';
+			return false;
+		}
+	}
+
+	async function leaveRoom() {
+		serverArena?.disconnect();
+		serverArena = null;
+		sharedArenaUrl = '';
+		shareMessage = '';
+		const room = multiplayerRoom;
+		multiplayerRoom = null;
+		if (room) await room.disconnect();
+		lobbyStatus = 'idle';
+		lobbyRole = null;
+		lobbyMembers = [];
+		roomCode = '';
+		publicArena = false;
+		remoteIntents = [];
+		pendingNetworkEvents = [];
+		lobbyError = '';
+		if (mode === 'arena') {
+			mode = 'title';
+			game = null;
+			isRunning = false;
+		}
+	}
+
+	async function startMultiplayerMatch() {
+		if (!multiplayerRoom || lobbyRole !== 'host' || !lobbyMembers.length) return;
+		const seed = Math.floor(Math.random() * 2 ** 30);
+		game = createGame({ seed, players: playerSetupsForRoster(lobbyMembers) });
+		humanId = localPlayerId;
+		remoteIntents = [];
+		pendingNetworkEvents = [];
+		lastPublishedTimeMs = -Infinity;
+		botController.reset();
+		startSession('arena');
+		await multiplayerRoom.start($state.snapshot(game));
 	}
 
 	function startRespawnPreview() {
@@ -278,7 +478,7 @@
 		startSession('tutorial');
 	}
 
-	function continueAfterReachLesson() {
+	function continueAfterGrowthLesson() {
 		if (mode !== 'tutorial' || tutorialStep !== 2 || !game) return;
 		stageTutorialRoute(game, 'cyan');
 		mobileConversion = 'power';
@@ -418,8 +618,11 @@
 
 	let queuedIntents: GameIntent[] = [];
 	function dispatch(intent: HumanIntent) {
-		if (game && isRunning && !isDead)
-			queuedIntents.push({ ...intent, playerId: humanId } as GameIntent);
+		if (!game || !isRunning || isDead) return;
+		const gameIntent = { ...intent, playerId: humanId } as GameIntent;
+		if (serverArena) serverArena.sendIntent(gameIntent);
+		else if (lobbyRole === 'guest' && multiplayerRoom) void multiplayerRoom.sendIntent(gameIntent);
+		else queuedIntents.push(gameIntent);
 	}
 
 	function viewport(rect: DOMRect) {
@@ -470,8 +673,7 @@
 			.filter(Boolean) as Monster['color'][];
 		return Boolean(
 			previous?.neighborIds.includes(monster.id) &&
-			canExtendWithColor(colors, monster.color, game.config.grindstoneStreak) &&
-			Math.hypot(monster.position.x - me.position.x, monster.position.y - me.position.y) <= me.reach
+			canExtendWithColor(colors, monster.color, game.config.grindstoneStreak)
 		);
 	}
 
@@ -576,7 +778,9 @@
 			return;
 		}
 		latestChainMonster = '';
-		commitAfterTick = event.shiftKey ? 'power' : dragConversion;
+		const conversion = event.shiftKey ? 'power' : dragConversion;
+		if (lobbyRole === 'guest') dispatch({ type: 'chain-commit', conversion });
+		else commitAfterTick = conversion;
 	}
 
 	function toggleMobileAim() {
@@ -624,6 +828,7 @@
 
 	function onKeyDown(event: KeyboardEvent) {
 		if (mode === 'title') {
+			if (event.target instanceof HTMLInputElement) return;
 			if (event.code === 'KeyT') {
 				event.preventDefault();
 				startTutorial();
@@ -894,19 +1099,6 @@
 			context.setLineDash([]);
 		}
 
-		if (me && (mode !== 'tutorial' || tutorialStep >= 2)) {
-			context.beginPath();
-			context.arc(target.x, target.y, reach, 0, Math.PI * 2);
-			const teachingReach = mode === 'tutorial' && tutorialStep === 2;
-			context.strokeStyle = teachingReach
-				? `rgba(100,220,229,${0.72 + Math.sin(now * 0.008) * 0.18})`
-				: 'rgba(255,227,110,.25)';
-			context.lineWidth = teachingReach ? 6 : 3;
-			context.setLineDash([8, 9]);
-			context.stroke();
-			context.setLineDash([]);
-		}
-
 		for (const player of players) {
 			if (!player.chain.length) continue;
 			const linked = player.chain
@@ -1037,6 +1229,13 @@
 	}
 
 	onMount(() => {
+		localPlayerId =
+			localStorage.getItem('grindion-player-id') ??
+			(typeof crypto.randomUUID === 'function'
+				? crypto.randomUUID()
+				: `player-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+		localStorage.setItem('grindion-player-id', localPlayerId);
+		playerName = localStorage.getItem('grindion-player-name') ?? 'Wanderer';
 		const touchQuery = window.matchMedia('(pointer: coarse), (max-width: 700px)');
 		const updateTouchControls = () => (useTouchControls = touchQuery.matches);
 		updateTouchControls();
@@ -1055,10 +1254,12 @@
 			const elapsed = Math.min(100, now - last);
 			last = now;
 			if (game && isRunning) {
-				accumulator += elapsed;
+				if (lobbyRole === 'guest') accumulator = 0;
+				else accumulator += elapsed;
 				while (accumulator >= 50) {
-					const intents = [...queuedIntents];
+					const intents = [...queuedIntents, ...(lobbyRole === 'host' ? remoteIntents : [])];
 					queuedIntents = [];
+					if (lobbyRole === 'host') remoteIntents = [];
 					if (mode === 'arena') intents.push(...(botController.update?.(game) ?? []));
 					if (
 						mode === 'tutorial' &&
@@ -1082,6 +1283,7 @@
 					const result = stepGame($state.snapshot(game), intents, 50);
 					game = result.state;
 					for (const event of result.events) addEvent(event);
+					if (lobbyRole === 'host') pendingNetworkEvents.push(...result.events);
 					if (commitAfterTick) {
 						queuedIntents.push({
 							type: 'chain-commit',
@@ -1092,6 +1294,12 @@
 					}
 					if (mode === 'tutorial' && tutorialStep === 0 && game.players.human!.chain.length >= 3)
 						tutorialStep = 1;
+					if (lobbyRole === 'host' && multiplayerRoom && game.timeMs - lastPublishedTimeMs >= 100) {
+						lastPublishedTimeMs = game.timeMs;
+						const events = pendingNetworkEvents;
+						pendingNetworkEvents = [];
+						void multiplayerRoom.publish($state.snapshot(game), events);
+					}
 					accumulator -= 50;
 				}
 				if (game.timeMs >= game.roundEndsAtMs) isRunning = false;
@@ -1103,6 +1311,8 @@
 		return () => {
 			cancelAnimationFrame(frame);
 			touchQuery.removeEventListener('change', updateTouchControls);
+			void multiplayerRoom?.disconnect();
+			serverArena?.disconnect();
 		};
 	});
 </script>
@@ -1124,7 +1334,21 @@
 			<div class:urgent={secondsLeft <= 30} class="round-clock">
 				<span>ROUND</span><strong>{timerText}</strong>
 			</div>
-			<div class="server-state"><i></i>{isRunning ? 'SIMULATION LIVE' : 'CAVERN READY'}</div>
+			<div class="server-state">
+				<i></i>{serverArena
+					? isRunning
+						? 'ARENA SERVER LIVE'
+						: 'REJOIN ARENA'
+					: lobbyRole && mode === 'arena'
+						? isRunning
+							? lobbyRole === 'host'
+								? 'NETWORK HOST LIVE'
+								: 'SYNCED TO HOST'
+							: 'NETWORK ROUND ENDED'
+						: isRunning
+							? 'SIMULATION LIVE'
+							: 'CAVERN READY'}
+			</div>
 		{:else}
 			<div class="training-progress">TRAINING MODE</div>
 		{/if}
@@ -1147,7 +1371,7 @@
 								class:current={index === tutorialStep}
 							></i>{/each}
 					</div>
-					{#if tutorialStep === 2}<button onclick={continueAfterReachLesson}>BUILD POWER →</button
+					{#if tutorialStep === 2}<button onclick={continueAfterGrowthLesson}>BUILD POWER →</button
 						>{/if}
 					{#if tutorialStep === 6}<button onclick={startArena}>ENTER LIVE ARENA →</button>{/if}
 				</div>
@@ -1161,6 +1385,13 @@
 				role="application"
 				aria-label="Grindion game arena"
 			>
+				{#if serverArena && isRunning}
+					<div class="arena-social">
+						<button onclick={shareArena}>{shareMessage || 'INVITE FRIENDS'}</button>
+						<a href={resolve(`/?arena=${roomCode}`)}>ARENA {roomCode}</a>
+						<button onclick={leaveRoom}>LEAVE ARENA</button>
+					</div>
+				{/if}
 				<canvas
 					bind:this={canvas}
 					tabindex="0"
@@ -1190,8 +1421,7 @@
 						{#if mode === 'arena' || tutorialStep >= 1}
 							<div class="score-card">
 								<span>SCORE</span><strong>{score}</strong
-								>{#if mode === 'arena' || tutorialStep >= 2}<small>RANGE {Math.round(reach)}</small
-									>{/if}
+								>{#if mode === 'arena' || tutorialStep >= 2}<small>NO PATH LIMIT</small>{/if}
 							</div>
 						{/if}
 						{#if mode === 'arena' || tutorialStep >= 3}
@@ -1204,7 +1434,7 @@
 					</div>
 				{/if}
 				{#if mode === 'tutorial' && tutorialStep === 2}
-					<div class="range-callout">DASHED RING = CURRENT REACH</div>
+					<div class="range-callout">ADJACENT PATHS · UNLIMITED DISTANCE</div>
 				{/if}
 				{#if isAiming}
 					<div class="aim-callout">RELEASE TO FIRE ALL {Math.floor(power)} POWER</div>
@@ -1282,13 +1512,92 @@
 						<div class="eyebrow">A SHARED-BOARD CHAIN BRAWLER</div>
 						<h1>GRIND<span>ION</span></h1>
 						<p>Weave greedy chains. Bank Score or forge Power. Every shot costs everything.</p>
-						<div class="title-actions">
-							<button onclick={startTutorial}>PLAY TUTORIAL <span>▶</span></button><button
-								class="secondary"
-								onclick={startArena}>ENTER ARENA <span>⚔</span></button
-							>
-						</div>
-						<p class="keyboard-start"><kbd>T</kbd> TUTORIAL · <kbd>A</kbd> ARENA</p>
+						{#if lobbyStatus === 'lobby'}
+							<div class="lobby-card">
+								<div>
+									<span>{publicArena ? 'PUBLIC ARENA' : 'ROOM CODE'}</span><strong
+										>{publicArena
+											? lobbyMembers.length >= 2
+												? 'MATCH FOUND'
+												: 'SEARCHING…'
+											: roomCode}</strong
+									>
+								</div>
+								<ul aria-label="Room players">
+									{#each lobbyMembers as member (member.playerId)}
+										<li>
+											<i></i>{member.playerId === localPlayerId ? 'YOU' : member.name}<small
+												>{publicArena ? 'READY' : member.role === 'host' ? 'HOST' : 'READY'}</small
+											>
+										</li>
+									{/each}
+								</ul>
+								{#if publicArena}
+									<p>
+										{lobbyMembers.length >= 2
+											? 'Rival found. Dropping into the arena…'
+											: 'Searching for another real player…'}
+									</p>
+								{:else if lobbyRole === 'host'}
+									<button onclick={startMultiplayerMatch}>START ONLINE MATCH ⚡</button>
+								{:else}
+									<p>Waiting for the host to start the round…</p>
+								{/if}
+								<button class="text-button" onclick={leaveRoom}>LEAVE ROOM</button>
+							</div>
+						{:else}
+							<div class="online-setup">
+								<label>
+									<span>CALLSIGN</span>
+									<input maxlength="18" autocomplete="nickname" bind:value={playerName} />
+								</label>
+								<div class="online-actions">
+									<button
+										class="public-arena-button"
+										disabled={lobbyStatus === 'connecting'}
+										onclick={joinOnlineArena}
+										>{lobbyStatus === 'connecting'
+											? 'ENTERING ARENA…'
+											: 'JOIN ONLINE ARENA ⚡'}</button
+									>
+									<small>PLAY NOW · BOTS FILL EMPTY SEATS</small>
+									<details class="host-room-option">
+										<summary>PRIVATE ROOMS</summary>
+										<div class="private-room-actions">
+											<div class="join-room">
+												<input
+													aria-label="Private room code"
+													placeholder="ROOM CODE"
+													maxlength="6"
+													bind:value={joinCode}
+												/>
+												<button
+													disabled={!isSupabaseConfigured() || lobbyStatus === 'connecting'}
+													onclick={() => connectRoom('guest')}>JOIN PRIVATE</button
+												>
+											</div>
+											<button
+												class="secondary"
+												disabled={!isSupabaseConfigured() || lobbyStatus === 'connecting'}
+												onclick={() => connectRoom('host')}>CREATE PRIVATE ROOM</button
+											>
+										</div>
+									</details>
+								</div>
+								{#if !isSupabaseConfigured()}
+									<small>ADD THE TWO PUBLIC SUPABASE ENV VARS TO ENABLE PRIVATE ROOMS</small>
+								{/if}
+							</div>
+							<div class="solo-divider"><span>OR TRAIN OFFLINE</span></div>
+							<div class="title-actions">
+								<button onclick={startTutorial}>PLAY TUTORIAL <span>▶</span></button><button
+									class="secondary"
+									onclick={startArena}>ENTER ARENA <span>⚔</span></button
+								>
+							</div>
+							<p class="keyboard-start"><kbd>T</kbd> TUTORIAL · <kbd>A</kbd> ARENA</p>
+						{/if}
+						{#if lobbyError}<p class="lobby-error" role="alert">{lobbyError}</p>{/if}
 					</div>
 				{:else if !isRunning}
 					<div class="start-overlay compact">
@@ -1298,7 +1607,16 @@
 								? 'CAVERN CONQUERED'
 								: `${leaderboard[0]?.name ?? 'A RIVAL'} WINS`}
 						</h1>
-						<button onclick={startArena}>PLAY AGAIN ↻</button>
+						{#if serverArena}
+							<p>{lobbyError || 'Next round starts in a moment…'}</p>
+						{:else if lobbyRole === 'host'}
+							<button onclick={startMultiplayerMatch}>HOST REMATCH ↻</button>
+						{:else if lobbyRole === 'guest'}
+							<p>Waiting for the host to launch a rematch…</p>
+						{:else}
+							<button onclick={startArena}>PLAY AGAIN ↻</button>
+						{/if}
+						{#if lobbyRole}<button class="text-button" onclick={leaveRoom}>LEAVE ROOM</button>{/if}
 					</div>
 				{/if}
 			</div>
@@ -1374,7 +1692,7 @@
 						<li>
 							<b>2</b>
 							<div>
-								<strong>CHOOSE</strong><span>Score grows reach + health. Power fights.</span>
+								<strong>CHOOSE</strong><span>Score grows health. Power fights.</span>
 							</div>
 						</li>
 						<li>
@@ -1402,6 +1720,26 @@
 </main>
 
 <style>
+	.arena-social {
+		position: absolute;
+		bottom: 12px;
+		left: 12px;
+		right: 12px;
+		z-index: 5;
+		display: flex;
+		justify-content: center;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+	.arena-social button,
+	.arena-social a {
+		font-size: 10px;
+		padding: 8px;
+		background: #281d2b;
+		color: #ffe36e;
+		border: 1px solid #ffe36e;
+	}
+
 	:global(body) {
 		image-rendering: pixelated;
 	}
@@ -1931,7 +2269,165 @@
 	.title-actions {
 		display: flex;
 		gap: 10px;
+		margin-top: 12px;
+	}
+	.online-setup {
+		width: min(520px, 100%);
+		margin-top: 14px;
+		padding: 12px;
+		background: rgb(8 16 25 / 72%);
+		border: 2px solid #466269;
+	}
+	.online-setup label {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		align-items: center;
+		gap: 10px;
+		text-align: left;
+	}
+	.online-setup label span,
+	.online-setup > small,
+	.lobby-card span {
+		color: #64dce5;
+		font: 900 8px monospace;
+		letter-spacing: 0.12em;
+	}
+	.online-setup > small {
+		display: block;
+		margin-top: 9px;
+		color: #ff8b81;
+	}
+	.online-setup input {
+		min-width: 0;
+		padding: 10px;
+		color: #fff0ad;
+		background: #101c28;
+		border: 2px solid #466269;
+		outline: none;
+		font: 900 11px monospace;
+		text-transform: uppercase;
+	}
+	.online-setup input:focus {
+		border-color: #64dce5;
+	}
+	.online-actions {
+		margin-top: 9px;
+	}
+	.public-arena-button {
+		width: 100%;
+		padding-block: 16px;
+		font-size: 12px;
+	}
+	.online-actions > small {
+		display: block;
+		margin-top: 8px;
+		color: #64dce5;
+		font: 900 7px monospace;
+		letter-spacing: 0.14em;
+	}
+	.join-room {
+		display: grid;
+		grid-template-columns: minmax(0, 0.65fr) minmax(0, 1.35fr);
+		gap: 8px;
+	}
+	.join-room input {
+		letter-spacing: 0.12em;
+	}
+	.join-room button {
+		font-size: 11px;
+	}
+	.host-room-option {
+		margin-top: 14px;
+	}
+	.host-room-option summary {
+		color: #80958f;
+		font: 900 8px monospace;
+		letter-spacing: 0.12em;
+		cursor: pointer;
+	}
+	.private-room-actions {
+		display: grid;
+		gap: 10px;
+		margin-top: 10px;
+		padding-top: 10px;
+		border-top: 1px solid #466269;
+	}
+	.host-room-option button {
+		width: 100%;
+	}
+	.solo-divider {
+		display: flex;
+		align-items: center;
+		width: min(420px, 90%);
+		margin-top: 12px;
+		color: #80958f;
+		font: 900 7px monospace;
+		letter-spacing: 0.16em;
+	}
+	.solo-divider::before,
+	.solo-divider::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		margin: 0 10px;
+		background: #466269;
+	}
+	.lobby-card {
+		width: min(430px, 100%);
 		margin-top: 18px;
+		padding: 16px;
+		background: rgb(8 16 25 / 82%);
+		border: 3px solid #64dce5;
+		box-shadow: 5px 5px 0 #110d16;
+	}
+	.lobby-card > div:first-child {
+		display: grid;
+		gap: 3px;
+	}
+	.lobby-card > div strong {
+		color: #ffe36e;
+		font: 1000 32px monospace;
+		letter-spacing: 0.18em;
+	}
+	.lobby-card ul {
+		display: grid;
+		gap: 5px;
+		margin: 12px 0;
+		padding: 0;
+		list-style: none;
+	}
+	.lobby-card li {
+		display: grid;
+		grid-template-columns: auto 1fr auto;
+		align-items: center;
+		gap: 8px;
+		padding: 7px 9px;
+		color: #fff0ad;
+		background: #152532;
+		font: 900 10px monospace;
+		text-align: left;
+	}
+	.lobby-card li i {
+		width: 7px;
+		height: 7px;
+		background: #5ee6a8;
+		box-shadow: 0 0 7px #5ee6a8;
+	}
+	.lobby-card li small {
+		color: #64dce5;
+		font-size: 7px;
+	}
+	.lobby-card button:not(.text-button) {
+		width: 100%;
+	}
+	.lobby-card p {
+		margin: 10px auto;
+		font-size: 9px;
+	}
+	.lobby-error {
+		margin: 10px 0 0 !important;
+		color: #ff8b81 !important;
+		font-size: 9px !important;
 	}
 	button {
 		padding: 13px 15px;
@@ -1943,6 +2439,10 @@
 		letter-spacing: 0.07em;
 		cursor: pointer;
 	}
+	button:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
 	button:hover {
 		transform: translate(-1px, -1px);
 		box-shadow: 6px 6px 0 #110d16;
@@ -1950,6 +2450,13 @@
 	button.secondary {
 		color: #fff2cd;
 		background: #d34e52;
+	}
+	button.text-button {
+		padding: 8px;
+		color: #9eb6ac;
+		background: transparent;
+		border: 0;
+		box-shadow: none;
 	}
 	.start-overlay.compact h1 {
 		font-size: 44px;
@@ -2242,10 +2749,27 @@
 			grid-column: 1 / -1;
 		}
 		.start-overlay {
+			justify-content: flex-start;
+			overflow-y: auto;
 			padding: 20px 14px;
 		}
 		.start-overlay h1 {
-			font-size: 50px;
+			font-size: 46px;
+		}
+		.start-overlay .crest {
+			width: 46px;
+			height: 46px;
+			margin-bottom: 10px;
+			font-size: 27px;
+		}
+		.online-actions {
+			width: 100%;
+		}
+		.join-room {
+			grid-template-columns: 1fr;
+		}
+		.lobby-card > div strong {
+			font-size: 25px;
 		}
 		.respawn-overlay {
 			padding: 16px;
