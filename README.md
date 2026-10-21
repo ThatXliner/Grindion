@@ -161,3 +161,8 @@ If you are changing rules, keep the simulation deterministic, add the engine-lev
 <p align="center">
   <strong>Greed has a cost. Make the chain worth it.</strong>
 </p>
+
+## TLS runtime requirement
+
+Use Node.js 22.23.4+, 24.22.1+, or 26.12.1+ for installs, builds, and server execution. Node 23 and 25 are unsupported. These floors include the October 2026 eMudhra CA distrust update.
+Restart or rebuild existing deployments after upgrading; an engine declaration alone does not update a running process.
