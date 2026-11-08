@@ -1,26 +1,17 @@
 # Grindion — Game Design and Technical Architecture
 
 Status: pre-production concept  
-Last updated: 2026-07-16
+Last updated: 2026-11-08
 
 ## 1. High concept
 
-Grindion is a competitive `.io` puzzle-combat game played on one large,
-continuously replenishing board. Players route through connected monsters to
-build chains, then convert each completed chain into either permanent Score or
-temporary combat Power.
+Grindion is a competitive puzzle-combat game on a shared monster board.
+Every completed chain moves the player, scores one point per monster, and
+charges Power. Power has no cap, so players can bank several shots. Each shot
+costs a fixed amount of Power and can be dodged or parried.
 
-Score makes a player gradually tougher. Power can be
-spent on a single, all-in projectile. Projectiles travel through the arena and
-can be dodged or nullified with a well-timed parry. Firing leaves the attacker
-without enough Power to defend until they build another Power chain.
-
-The central decisions are:
-
-- How long can I safely extend this chain?
-- Do I turn it into long-term growth or short-term combat Power?
-- Is this shot worth leaving myself unable to parry?
-- Should I finish my chain, or cancel it to defend against an incoming shot?
+The central decisions are how far to extend a chain, when to shoot, and when
+to cancel a route to defend.
 
 ## 2. Design pillars
 
@@ -36,15 +27,14 @@ player's route easier to predict. A chain has no value until it is committed.
 
 ### Leaders are powerful, not invincible
 
-Score increases maximum health logarithmically, while also reducing
-Power-generation efficiency. A smaller player cannot match a leader's board
-control, but can recharge faster and can nullify any attack with a correctly
-timed parry.
+Score increases maximum health logarithmically. Every player earns the same
+Power from an equivalent chain, every shot deals the same damage, and anyone
+can nullify an attack with a correctly timed parry.
 
 ### Every attack is a commitment
 
-Shooting consumes all stored Power. A missed, dodged, or parried shot creates a
-clear counterattack window.
+Each shot costs Power that took a chain to earn. A missed, dodged, or parried
+shot spends that work for nothing.
 
 ### Readability over simulation complexity
 
@@ -58,7 +48,7 @@ The target format is a session-based `.io` arena:
 
 - Multiple players share one large monster field.
 - Monsters continuously replenish to prevent the board from being exhausted.
-- Players earn Score, climb a live leaderboard, and become harder to kill.
+- Players score points and climb a live leaderboard; the top score wins.
 - Death causes a partial setback followed by a quick respawn.
 - Sessions should be short enough to encourage replay and long enough for a
   leader to emerge.
@@ -70,7 +60,7 @@ Initial tuning targets, not final commitments:
 - 20–40 players and 8–10 minute rounds as a later target
 
 Before the live arena, a fixed-seed tutorial teaches chain-based traversal,
-Score chaining, Power chaining, aiming/firing, and parrying in a controlled
+Power charging, scoring, aiming/firing, and parrying in a controlled
 training room. Its progression is driven by actual simulation events rather
 than timers.
 
@@ -78,9 +68,9 @@ than timers.
 
 Each player has:
 
-- `score`: persistent progression within the current match
+- `score`: points earned within the current match
 - `health`: current survivability
-- `maxHealth`: derived logarithmically from Score
+- `maxHealth`: derived logarithmically from score
 - `reach`: legacy snapshot field; does not limit chain paths
 - `power`: stored combat resource
 - `cellId`: the square-grid cell currently occupied by the player
@@ -112,11 +102,11 @@ their individual hits remain countable.
 - A chain begins on a monster directly adjacent to the player's current cell.
 - Each added monster must satisfy the connection rules, initially expected to
   mean adjacency and matching color.
-- The route cannot exceed the player's current Reach.
+- Routes have no distance cap from the starting cell.
 - Dragging back onto any earlier monster truncates the provisional route there,
   allowing the player to reconsider and continue in a different direction.
 - A chain is provisional until committed.
-- A player may cancel a chain at any time and receive no Score or Power.
+- A player may cancel a chain at any time and receive no score or Power.
 - Cancelling returns all provisional monsters to normal board availability.
 
 ### Rainbow Grindstone switch
@@ -128,7 +118,7 @@ The Grindstone is a route state rather than a physical board item:
 - The next adjacent monster may be a different color and consumes the switch.
 - That monster becomes the first entry in the new color streak.
 - Continuing the current color preserves readiness; switches do not stack.
-- Adjacency, Reach, shared-board conflict, and commitment rules still apply.
+- Adjacency, shared-board conflict, and commitment rules still apply.
 - Being hit cancels the unfinished chain and its rainbow opportunity.
 
 This keeps the original game's color-pivot route planning without requiring a
@@ -147,71 +137,89 @@ resolved authoritatively when a chain is committed:
 This rule should be playtested. Fully reserving monsters as soon as they enter a
 chain is a fallback if provisional overlap proves visually confusing.
 
-## 6. Converting a chain
+## 6. Chain rewards
 
-A completed chain has two mutually exclusive outcomes.
+Every valid chain consumes its monsters, moves the player to its endpoint,
+and gives 1 point and 5 Power per monster. A chain requires at least three
+monsters. There is one commit action for all chains, and Power has no cap.
+Cancelled or invalid routes grant no rewards.
 
-### Bank for Score
+Examples: three monsters grant 3 points and 15 Power. Ten grant 10 points and
+50 Power. The rainbow Grindstone switch changes which routes are possible but
+grants no bonus.
 
-- The chain's monsters are consumed.
-- The player receives permanent match Score.
-- Maximum health and Reach are recalculated.
-- Banking restores a small amount of health, subject to playtesting.
-- The chain grants no Power.
-
-### Convert to Power
-
-- The chain's monsters are consumed.
-- The player gains stored Power instead of Score.
-- Power gained is reduced as Score increases.
-- Power does not decay in the MVP. A cap or slow overflow decay may be added
-  only if hoarding creates stagnant play.
-
-The input for selecting Score versus Power remains an interaction-design task.
-A likely desktop scheme is normal release to bank and modifier + release to
-convert to Power.
-
-## 7. Growth and comeback model
-
-Score has diminishing returns. Exact constants must be determined through
-simulation and playtesting, but the intended family of formulas is:
+## 7. Score and growth
 
 ```text
-maxHealth(score) = baseHealth + healthScale * ln(1 + score / scoreScale)
-
-powerEfficiency(score) = 1 / (1 + handicapScale * ln(1 + score / scoreScale))
-
-powerGained = chainPowerValue * powerEfficiency(score)
+score += chain length
+power += 5 * chain length
+maxHealth = 100 + 35 * ln(1 + score / 100)
 ```
 
-Consequences:
+Score also restores 0.35 health per point, up to maximum health. The legacy
+`reach` snapshot field retains its existing formula, but routes have no
+distance cap. Death removes 20% of score. A new round resets score. The
+player with the highest score at round end wins.
 
-- A leader can access more routing options and survive more damage.
-- Growth never grants proportionally unlimited Reach or health.
-- Smaller players produce more Power from an equivalent chain.
-- Timing-based parries remain effective regardless of attacker Score or shot
-  strength.
+### Character evolution
 
-Reach uses a smaller, independent score scale so its early gains are immediately
-noticeable. Its higher base gives new players useful opening route choice, while
-the lower multiplier keeps its late-game result close to the original curve.
-Health and Power efficiency retain their shared, slower growth scale. The Score
-advantage must stay noticeable but modest to avoid runaway snowballing.
+The hero's sprite follows its current score for every player, including bots.
+The four forms share the masked face, yellow eyes, blue hair, and red scarf:
+
+| Score   | Form        | Appearance                                                |
+| ------- | ----------- | --------------------------------------------------------- |
+| 0–49    | Wanderer    | Tunic, belt, and short scarf                              |
+| 50–149  | Chainrunner | Long twin-tail scarf, chain bandolier, and steel bracers  |
+| 150–299 | Grindknight | Broad pauldrons, grindstone chest emblem, and knee guards |
+| 300+    | Grindion    | Full armor, stone wheel, and crimson cape                 |
+
+Evolution is purely visual. The score card shows the current form and the score
+needed for the next one. Losing score can lower the form, so the appearance
+always matches the current score. Forms are derived from the authoritative
+score and shared thresholds in `src/lib/render/heroForms.ts`.
 
 ## 8. Shooting
 
 - A player aims in a direction and fires immediately.
-- Firing consumes all stored Power; there is no charge-to-fire timer.
-- The projectile's damage is based on the Power spent.
+- Firing costs 15 Power and requires at least that much stored; there is no
+  charge-to-fire timer. Leftover Power stays banked.
+- Every projectile deals 20 damage.
 - Projectile speed is fixed or nearly fixed so dodging and parry timing remain
   learnable.
 - Projectiles visibly travel through the arena rather than resolving instantly.
 - Shots have a finite lifetime or maximum range.
-- After firing, the attacker has zero Power and cannot parry until they rebuild
-  at least the minimum defensive Power.
+- Firing several shots in a row drains the bank, so a player who unloads
+  everything cannot parry until they rebuild at least the minimum defensive
+  Power.
 
 Travel time makes prediction important. Players can lead a moving target or
 fire along the visible route of someone building a long chain.
+
+### Chain finishers
+
+With at least 15 Power stored before committing, a player can end a chain of
+three or more monsters on an opponent adjacent to the final monster. The
+attacker stops on the final monster. Opponents are terminal targets and never
+become ordinary chain nodes or occupied destinations.
+
+A finisher costs 15 Power. Its monsters still earn score and Power as usual.
+The strike deals 20 damage and lands
+after the route's traversal duration plus 600 ms. It marks the victim's current
+cell and does not follow them. Leaving the cell makes it miss. A timed parry
+blocks it and staggers the attacker for 400 ms.
+
+The attacker cannot chain, fire, or parry during windup. Taking damage interrupts
+the strike. Dead and spawn-protected players cannot be targeted, and protection
+is checked again at impact. A victim can have only one pending finisher. If a
+selected target becomes invalid before commit, the route commits normally and
+charges Power instead. Round end cancels pending finishers.
+
+Mouse and touch players drag onto an adjacent opponent, then release. Keyboard
+players select the opponent's direction and press 5 or Enter. Another direction
+clears the player target; extending or backtracking through monsters also clears
+it. A dashed red line shows selection. A red cell marker and progress bar show
+pending strikes, turning cyan during the parry window. The victim receives a
+warning to parry or chain away.
 
 ## 9. Parrying and defense
 
@@ -225,9 +233,9 @@ projectile's Power.
 - A failed parry creates a short recovery/cooldown window.
 - Shot strength does not reduce the valid parry window.
 
-This ensures that a new or low-Score player can defend against a leader through
+This ensures that a new or low-scoring player can defend against a leader through
 skill. It also makes firing risky: after a target nullifies the shot, the target
-usually retains Power while the initiator has none.
+usually retains Power while the initiator has spent theirs.
 
 ### Chaining under fire
 
@@ -243,17 +251,17 @@ force an opponent to abandon a valuable chain.
 
 ## 10. Health, damage, death, and respawn
 
-- Maximum health increases logarithmically with Score.
-- An unparried projectile damages health according to the Power spent on it.
-- Banking a Score chain is the current preferred source of limited healing.
+- Maximum health increases logarithmically with score.
+- An unparried projectile deals a fixed 20 damage.
+- Scoring from a chain restores a small amount of health.
 - At zero health, the player dies and quickly respawns.
-- Death should remove only part of the player's Score, preserving comeback
+- Death should remove only part of the player's score, preserving comeback
   potential without erasing the consequences of failure.
 - A short spawn-protection window should prevent immediate repeat kills. It ends
   when the player attacks or begins a chain.
 
-Exact damage scaling, healing, Score loss, respawn time, and spawn protection
-duration remain open tuning decisions.
+Damage, healing, score loss, respawn time, and spawn protection
+remain tunable through the shared game configuration.
 
 ## 11. Controls and interaction goals
 
@@ -261,14 +269,14 @@ The control scheme is not final, but the action budget should remain small:
 
 - Drag through monsters to construct both a route and a chain
 - Commit that route to move to its final cell
-- Commit the chain as Score or Power
-- Aim and fire all Power
+- Release the chain to score and charge Power
+- Aim and fire one shot
 - Parry
 - Cancel the active chain
 
 The game should not require a timed shot-charge mechanic. Holding the aim input
 only changes the camera and targeting affordance; holding longer never increases
-damage. Releasing aim fires all stored Power immediately.
+damage. Releasing aim fires one shot immediately.
 
 Normal play uses a close player-follow camera that reveals only the local part
 of the shared board. Holding aim smoothly zooms out by roughly 25–30% and may
@@ -291,13 +299,13 @@ locked, especially for quick switching between routing, aiming, and parrying.
 - One shared arena
 - Monster generation and replenishment
 - Same-color connected chains
-- Score/Power conversion choice
-- Logarithmic Reach and maximum-health growth
-- Decreasing Power efficiency as Score rises
-- All-Power traveling projectiles
+- One point and 5 Power per chained monster, with no Power cap
+- Logarithmic maximum-health growth
+- Fixed-cost, fixed-damage traveling projectiles
 - Dodge and timing-based nullifying parry
 - Chain cancellation and interruption
-- Damage, death, partial Score loss, and respawn
+- Cell-targeted, dodgeable and parryable chain finishers
+- Damage, death, partial score loss, and respawn
 - Live leaderboard
 - Bots or a small multiplayer lobby for testing
 - Fixed-seed guided tutorial
@@ -307,7 +315,7 @@ locked, especially for quick switching between routing, aiming, and parrying.
 ### Explicitly excluded
 
 - Power dash
-- Physical collision combat
+- Physical collision combat beyond targeted chain finishers
 - Cutting another player's chain by dashing through it
 - Projectile reflection or repeated counter-parries
 - Multiple weapons or projectile types
@@ -328,10 +336,10 @@ The legacy private-room stack uses Supabase Realtime Presence for room rosters a
 ### Client responsibilities
 
 - Render the board, players, chains, projectiles, and effects.
-- Capture chain, conversion, fire, parry, and cancel intents.
+- Capture chain, fire, parry, and cancel intents.
 - Predict local chain highlighting and committed-route traversal where safe.
 - Interpolate remote players and server-owned projectiles.
-- Display Score, health, Power, chain value, leaderboard, and threat cues.
+- Display score, evolution progress, health, Power, leaderboard, and threat cues.
 - Reconcile predicted state with authoritative server results.
 
 ### Server responsibilities
@@ -340,7 +348,7 @@ The legacy private-room stack uses Supabase Realtime Presence for room rosters a
 - Derive player movement exclusively from validated chain commits.
 - Validate chain adjacency, color, and monster availability.
 - Resolve chain commits atomically and truncate conflicting provisional chains.
-- Convert chains into Score or Power using shared tuning formulas.
+- Award score and Power using shared tuning formulas.
 - Simulate projectile travel and collision.
 - Validate parry timing and apply nullification, damage, healing, and death.
 - Replenish the board and manage spawn selection/protection.
@@ -396,7 +404,8 @@ Clients should send compact intentions rather than arbitrary state updates:
 ```text
 StartChain
 ExtendChain(monsterId)
-CommitChain(Score | Power)
+TargetChainPlayer(playerId | null)
+CommitChain
 CancelChain
 Fire(direction)
 BeginParry / EndParry
@@ -411,7 +420,7 @@ died, and player respawned.
 - Begin with a fixed server simulation tick, likely 20–30 Hz.
 - Snapshot frequency can be lower if clients interpolate movement smoothly.
 - Provisional chain selection and committed-route traversal should feel immediate.
-- Chain ownership, hits, parries, Score, Power, and health require server
+- Chain ownership, hits, parries, score, Power, and health require server
   confirmation.
 - The parry window may need latency compensation with a strict maximum rewind
   so high-latency players remain viable without enabling abuse.
@@ -422,14 +431,13 @@ died, and player respawned.
 The first playable is successful if it answers these questions:
 
 1. Is creating a chain satisfying before combat is added?
-2. Does choosing Score versus Power create genuine hesitation?
+2. Do long chains feel worth the exposure?
 3. Can players understand who is dangerous and who has just fired?
 4. Are traveling shots dodgeable and predictable without feeling slow?
 5. Does cancelling a chain under fire feel tense rather than frustrating?
-6. Does parrying make low-Score players meaningfully competitive?
-7. Do logarithmic Reach and health rewards feel valuable without making leaders
-   oppressive?
-8. Does the all-in shot create a real counterattack window?
+6. Does parrying make low-scoring players meaningfully competitive?
+7. Does score-based health feel valuable without making leaders oppressive?
+8. Does banking Power for several shots make fights too bursty?
 9. Is there enough board space and monster replenishment for players to recover
    after firing or respawning?
 
@@ -440,19 +448,18 @@ These should be resolved through the implementation plan or early prototypes:
 - Engine/platform and networking stack
 - Square-grid density and spacing
 - Chain traversal timing, animation, and camera behavior
-- Exact Score-versus-Power commit controls
+- Progression pacing and damage balance
 - Chain scoring curve and combo bonuses
-- Growth, handicap, healing, and damage constants
-- Power cap and whether overflow should slowly decay
+- Growth, healing, and damage constants
+- Whether uncapped Power needs a cap or slow decay
 - Parry cost, window, cooldown, and latency compensation
 - Projectile range and interaction with arena geometry
-- Death Score penalty and whether any value drops into the world
+- Death score penalty and whether any value drops into the world
 - Round length, player count, and victory condition
 - Monster replenishment rules and anti-starvation behavior
 - Bot behavior required for repeatable balance testing
 
 ## 16. Working one-sentence pitch
 
-Build risky monster chains for growth or ammunition, then spend all your Power
-on a single predictive shot—knowing your target can parry it and punish you while
-you scramble to recharge.
+Drag through monsters to score and charge Power. Bank shots, fire, parry, and
+keep chaining before rivals catch you.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createGame, stepGame } from './engine';
-import { chainValue, maxHealthForScore, powerEfficiency, reachForScore } from './tuning';
+import { chainScore, maxHealthForScore, powerGain, reachForScore } from './tuning';
 import type { GameState } from './types';
 
 function connectedChain(state: GameState, minimum = 3): string[] {
@@ -60,7 +60,7 @@ describe('game engine', () => {
 		);
 	});
 
-	it('uses logarithmic growth and power handicap', () => {
+	it('keeps logarithmic growth and flat per-monster rewards', () => {
 		expect(reachForScore(100)).toBeGreaterThan(reachForScore(0));
 		expect(reachForScore(0)).toBe(180);
 		expect(reachForScore(10)).toBeCloseTo(188, 0);
@@ -68,8 +68,55 @@ describe('game engine', () => {
 		expect(maxHealthForScore(1000) - maxHealthForScore(100)).toBeLessThan(
 			9 * (maxHealthForScore(100) - maxHealthForScore(0))
 		);
-		expect(powerEfficiency(100)).toBeLessThan(powerEfficiency(0));
-		expect(chainValue(8)).toBe(12);
+		expect(powerGain(3)).toBe(15);
+		expect(chainScore(2)).toBe(0);
+		expect(chainScore(3)).toBe(3);
+		expect(chainScore(10)).toBe(10);
+	});
+
+	it('spends one shot of power for flat damage and banks the rest', () => {
+		for (const power of [15, 120]) {
+			const state = createGame({ players: [{ id: 'a' }, { id: 'b' }] });
+			Object.assign(state.players.a!, { position: { x: 200, y: 200 }, power, score: 400 });
+			Object.assign(state.players.b!, { position: { x: 260, y: 200 }, protectedUntilMs: 0 });
+			const result = stepGame(state, [{ type: 'fire', playerId: 'a', direction: { x: 1, y: 0 } }]);
+			expect(result.state.players.b!.health).toBe(80);
+			expect(result.state.players.a!.power).toBe(power - 15);
+			expect(result.events).toContainEqual({
+				type: 'player-damaged',
+				playerId: 'b',
+				byPlayerId: 'a',
+				damage: 20
+			});
+		}
+	});
+
+	it('refuses to fire below one shot of power', () => {
+		const state = createGame({ players: [{ id: 'a' }] });
+		state.players.a!.power = 14;
+		const result = stepGame(state, [{ type: 'fire', playerId: 'a', direction: { x: 1, y: 0 } }]);
+		expect(result.state.projectiles).toEqual({});
+		expect(result.state.players.a!.power).toBe(14);
+	});
+
+	it('banks power without a cap, rejects short chains, and earns no rewards for cancellation', () => {
+		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
+		const chain = connectedChain(state);
+		state.players.a!.power = 115;
+		state.players.a!.chain = chain;
+		state.players.a!.mode = 'chaining';
+		const committed = stepGame(state, [{ type: 'chain-commit', playerId: 'a' }]);
+		expect(committed.state.players.a!.power).toBe(130);
+		expect(committed.state.players.a!.score).toBe(3);
+		state.players.a!.chain = chain.slice(0, 2);
+		const short = stepGame(state, [{ type: 'chain-commit', playerId: 'a' }]);
+		expect(short.state.players.a!.power).toBe(115);
+		expect(short.state.players.a!.score).toBe(0);
+		expect(short.events).toEqual([]);
+		state.players.a!.chain = chain;
+		const cancelled = stepGame(state, [{ type: 'chain-cancel', playerId: 'a' }]);
+		expect(cancelled.state.players.a!.power).toBe(115);
+		expect(cancelled.state.players.a!.score).toBe(0);
 	});
 
 	it('unlocks one color switch after five consecutive monsters', () => {
@@ -135,7 +182,7 @@ describe('game engine', () => {
 		expect(result.state.players.a!.chain).toEqual(['m0', 'm1', 'm2', 'm18']);
 	});
 
-	it('extends and banks an adjacent path beyond the starting reach', () => {
+	it('extends and charges from an adjacent path beyond the starting reach', () => {
 		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
 		const route = ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'];
 		const origin = state.arena.monsters.m16!;
@@ -156,12 +203,13 @@ describe('game engine', () => {
 				.map((monsterId) => ({ type: 'chain-extend' as const, playerId: 'a', monsterId }))
 		]);
 		expect(result.state.players.a!.chain).toEqual(route);
-		result = stepGame(result.state, [{ type: 'chain-commit', playerId: 'a', conversion: 'score' }]);
+		result = stepGame(result.state, [{ type: 'chain-commit', playerId: 'a' }]);
 		expect(result.state.players.a!.cellId).toBe('m7');
-		expect(result.state.players.a!.score).toBe(chainValue(route.length));
+		expect(result.state.players.a!.score).toBe(route.length);
+		expect(result.state.players.a!.power).toBe(state.config.initialPower + route.length * 5);
 	});
 
-	it('builds and banks a valid same-color chain', () => {
+	it('scores and charges power from a valid minimum chain', () => {
 		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
 		const chain = connectedChain(state);
 		placePlayerBesideChain(state, 'a', chain);
@@ -173,8 +221,9 @@ describe('game engine', () => {
 				.slice(1)
 				.map((monsterId) => ({ type: 'chain-extend' as const, playerId: 'a', monsterId }))
 		]);
-		result = stepGame(result.state, [{ type: 'chain-commit', playerId: 'a', conversion: 'score' }]);
-		expect(result.state.players.a!.score).toBe(chainValue(chain.length));
+		result = stepGame(result.state, [{ type: 'chain-commit', playerId: 'a' }]);
+		expect(result.state.players.a!.score).toBe(3);
+		expect(result.state.players.a!.power).toBe(state.config.initialPower + 15);
 		expect(result.state.players.a!.position).toEqual(destination);
 		expect(result.state.players.a!.chain).toEqual([]);
 		expect(result.events).toContainEqual(
@@ -186,6 +235,24 @@ describe('game engine', () => {
 			})
 		);
 		expect(chain.every((id) => !result.state.arena.monsters[id]!.alive)).toBe(true);
+	});
+
+	it('reports the score before the chain so clients can show evolutions', () => {
+		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
+		const chain = connectedChain(state, 5);
+		Object.assign(state.players.a!, { score: 20, power: 120, chain, mode: 'chaining' });
+		const result = stepGame(state, [{ type: 'chain-commit', playerId: 'a' }]);
+		expect(result.state.players.a!.score).toBe(25);
+		expect(result.state.players.a!.power).toBe(145);
+		expect(result.events).toContainEqual(
+			expect.objectContaining({
+				type: 'chain-committed',
+				value: 5,
+				powerGained: 25,
+				powerSpent: 0,
+				scoreBefore: 20
+			})
+		);
 	});
 
 	it('requires a chain to begin on a cell adjacent to the character', () => {
@@ -207,17 +274,17 @@ describe('game engine', () => {
 			state.players[id]!.mode = 'chaining';
 		}
 		const result = stepGame(state, [
-			{ type: 'chain-commit', playerId: 'a', conversion: 'score', sequence: 1 },
-			{ type: 'chain-commit', playerId: 'b', conversion: 'score', sequence: 2 }
+			{ type: 'chain-commit', playerId: 'a', sequence: 1 },
+			{ type: 'chain-commit', playerId: 'b', sequence: 2 }
 		]);
-		expect(result.state.players.a!.score).toBeGreaterThan(0);
+		expect(result.state.players.a!.power).toBe(state.config.initialPower + 15);
 		expect(result.state.players.b!.score).toBe(0);
 		expect(
 			result.events.some((event) => event.type === 'chain-truncated' && event.playerId === 'b')
 		).toBe(true);
 	});
 
-	it('spends all power on a traveling shot and skill-parries it', () => {
+	it('spends one shot of power on a traveling shot and skill-parries it', () => {
 		const state = createGame({ players: [{ id: 'a' }, { id: 'b' }] });
 		state.players.a!.position = { x: 200, y: 200 };
 		state.players.b!.position = { x: 260, y: 200 };
@@ -231,7 +298,7 @@ describe('game engine', () => {
 			],
 			50
 		);
-		expect(result.state.players.a!.power).toBe(0);
+		expect(result.state.players.a!.power).toBe(25);
 		expect(result.state.players.b!.health).toBe(result.state.players.b!.maxHealth);
 		expect(result.events.some((event) => event.type === 'projectile-parried')).toBe(true);
 	});
@@ -251,12 +318,12 @@ describe('game engine', () => {
 
 	it('damages, kills, loses score, and respawns with protection', () => {
 		const state = createGame({ players: [{ id: 'a' }, { id: 'b' }] });
-		Object.assign(state.players.a!, { position: { x: 200, y: 200 }, power: 120 });
+		Object.assign(state.players.a!, { position: { x: 200, y: 200 }, power: 120, score: 400 });
 		Object.assign(state.players.b!, {
 			position: { x: 260, y: 200 },
 			protectedUntilMs: 0,
 			score: 100,
-			health: 100
+			health: 20
 		});
 		let result = stepGame(state, [{ type: 'fire', playerId: 'a', direction: { x: 1, y: 0 } }], 50);
 		expect(result.state.players.b!.mode).toBe('dead');

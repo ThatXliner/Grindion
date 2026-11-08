@@ -7,6 +7,7 @@
  * - `createBotController` emits ordinary player intents at a tunable cadence.
  * - tuning helpers are shared by UI previews and authoritative simulation.
  */
+export { canChainStrikeTarget } from './chainAttack';
 export { createGame, stepGame, FixedStepGame } from './engine';
 export {
 	createBotController,
@@ -20,8 +21,7 @@ export {
 	growthForScore,
 	reachForScore,
 	maxHealthForScore,
-	powerEfficiency,
-	chainValue,
+	chainScore,
 	powerGain
 } from './tuning';
 export { arenaGridMetrics, distance, normalize } from './arena';
@@ -35,6 +35,7 @@ export {
 } from './chainMotion';
 export type {
 	Arena,
+	ChainStrike,
 	CreateGameOptions,
 	EntityId,
 	GameConfig,

@@ -51,6 +51,10 @@ describe('Realtime room protocol', () => {
 
 	it('rejects malformed or non-finite network intents', () => {
 		expect(isGameIntent({ type: 'parry', playerId: 'p1' })).toBe(true);
+		expect(isGameIntent({ type: 'chain-commit', playerId: 'p1' })).toBe(true);
+		expect(isGameIntent({ type: 'chain-target', playerId: 'p1', targetId: 'p2' })).toBe(true);
+		expect(isGameIntent({ type: 'chain-target', playerId: 'p1', targetId: null })).toBe(true);
+		expect(isGameIntent({ type: 'chain-target', playerId: 'p1', targetId: 42 })).toBe(false);
 		expect(isGameIntent({ type: 'fire', playerId: 'p1', direction: { x: 1, y: Number.NaN } })).toBe(
 			false
 		);

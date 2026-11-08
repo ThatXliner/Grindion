@@ -1,9 +1,9 @@
 import {
 	arenaGridMetrics,
+	canChainStrikeTarget,
 	createChainMotionTiming,
 	grindstoneState,
 	maxHealthForScore,
-	powerGain,
 	sampleChainMotion
 } from '$lib/game';
 import type {
@@ -15,6 +15,7 @@ import type {
 	PlayerState
 } from '$lib/game';
 import { Effects } from './effects';
+import { HERO_FORM_SHEET, heroFormForScore } from './heroForms';
 
 export type Point = { x: number; y: number };
 export type ChainAnimation = {
@@ -40,7 +41,7 @@ export interface Scene {
 	legalTargetIds: ReadonlySet<string>;
 	/** Label for the "start here" ring around the hero, or null to hide it. */
 	startCue: string | null;
-	aim: { target: Point; power: number } | null;
+	aim: { target: Point; power: number; damage: number } | null;
 	chainPreview: { text: string; color: string } | null;
 	/** When true, draws no local-player affordances (title-screen attract mode). */
 	spectating: boolean;
@@ -138,6 +139,7 @@ function approach(target: Point, position: Point, velocity: Point) {
 export class ArenaRenderer {
 	readonly effects = new Effects();
 	private sprites: HTMLImageElement | null = null;
+	private heroForms: HTMLImageElement | null = null;
 	private floor: HTMLCanvasElement | null = null;
 	private floorKey = '';
 	private monsterBornAt = new Map<string, number>();
@@ -149,6 +151,9 @@ export class ArenaRenderer {
 		const image = new Image();
 		image.src = src;
 		this.sprites = image;
+		const heroForms = new Image();
+		heroForms.src = HERO_FORM_SHEET;
+		this.heroForms = heroForms;
 	}
 
 	reset() {
@@ -164,17 +169,31 @@ export class ArenaRenderer {
 			const endpoint = game.arena.monsters[event.monsterIds.at(-1) ?? '']?.position;
 			if (!endpoint) return;
 			const delay = createChainMotionTiming(event.length).totalMs;
-			const player = game.players[event.playerId];
 			const isYou = event.playerId === humanId;
-			if (event.conversion === 'score')
-				fx.float(endpoint, `+${event.value}`, PALETTE.gold, { delay, size: isYou ? 1.2 : 0.8 });
-			else
-				fx.float(
-					endpoint,
-					`+${powerGain(event.length, player?.score ?? 0, game.config)} PWR`,
-					PALETTE.energy,
-					{ delay, size: isYou ? 1.1 : 0.75 }
-				);
+			fx.float(endpoint, `+${event.powerGained} PWR`, PALETTE.energy, {
+				delay,
+				size: isYou ? 1.1 : 0.75
+			});
+			fx.float({ x: endpoint.x, y: endpoint.y - 26 }, `+${event.value}`, PALETTE.gold, {
+				delay: delay + 120,
+				size: isYou ? 1.2 : 0.8
+			});
+			if (heroFormForScore(event.scoreBefore + event.value) !== heroFormForScore(event.scoreBefore))
+				fx.float({ x: endpoint.x, y: endpoint.y - 54 }, 'EVOLVED', PALETTE.gold, {
+					delay: delay + 240,
+					size: isYou ? 1.4 : 0.9
+				});
+		} else if (event.type === 'chain-strike-ended') {
+			const position = game.arena.monsters[event.cellId]?.position;
+			if (!position) return;
+			if (event.outcome === 'parried') {
+				fx.ring(position, PALETTE.energy, { from: 20, to: 80, life: 400, width: 5 });
+				fx.burst(position, PALETTE.energy, 14, { speed: 180, life: 350 });
+				fx.float(position, 'PARRY!', PALETTE.energy);
+			} else if (event.outcome === 'hit') {
+				fx.burst(position, '#ffffff', 14, { speed: 220, life: 250 });
+				fx.ring(position, PALETTE.coral, { from: 10, to: 55, life: 220, width: 4 });
+			} else fx.float(position, event.outcome === 'missed' ? 'MISS' : 'INTERRUPTED', '#c9bde6');
 		} else if (event.type === 'projectile-fired') {
 			const origin = at(event.playerId);
 			if (!origin) return;
@@ -240,6 +259,7 @@ export class ArenaRenderer {
 		this.drawChainAnimations(context, scene);
 		this.drawProjectiles(context, scene);
 		this.drawPlayers(context, scene);
+		this.drawChainStrikes(context, scene);
 		const threat = scene.spectating ? null : this.drawThreat(context, scene);
 		this.drawAim(context, scene);
 		this.drawChainPreview(context, scene);
@@ -285,6 +305,36 @@ export class ArenaRenderer {
 			Math.round(drawHeight)
 		);
 		return true;
+	}
+
+	private hero(
+		context: CanvasRenderingContext2D,
+		player: PlayerState,
+		config: GameConfig,
+		x: number,
+		y: number,
+		size: number
+	) {
+		const sheet = this.heroForms;
+		if (!sheet?.complete || !sheet.naturalWidth) {
+			this.sprite(context, SPRITE.hero, x, y, size);
+			return;
+		}
+		const form = heroFormForScore(player.score);
+		const width = sheet.naturalWidth / 2;
+		const height = sheet.naturalHeight / 2;
+		context.imageSmoothingEnabled = false;
+		context.drawImage(
+			sheet,
+			form.column * width,
+			form.row * height,
+			width,
+			height,
+			Math.round(x - size / 2),
+			Math.round(y - size / 2),
+			size,
+			size
+		);
 	}
 
 	private shadow(context: CanvasRenderingContext2D, x: number, y: number, radius: number) {
@@ -413,9 +463,14 @@ export class ArenaRenderer {
 		const myChain = new Set(game.players[scene.humanId]?.chain ?? []);
 		const legalPulse = 0.45 + Math.sin(now * 0.012) * 0.25;
 
+		const margin = MONSTER_SIZE;
+		const halfWidth = scene.width / (2 * scene.camera.scale) + margin;
+		const halfHeight = scene.height / (2 * scene.camera.scale) + margin;
 		for (const monster of Object.values(game.arena.monsters)) {
 			if (!monster.alive) continue;
 			const { x, y } = monster.position;
+			if (Math.abs(x - scene.camera.x) > halfWidth || Math.abs(y - scene.camera.y) > halfHeight)
+				continue;
 			const seed = hash(monster.id);
 			const bornAt = this.monsterBornAt.get(monster.id);
 			const spawn = bornAt === undefined ? 1 : Math.min(1, (now - bornAt) / 300);
@@ -428,7 +483,8 @@ export class ArenaRenderer {
 				context.fillStyle = chainColor + '33';
 				context.strokeStyle = chainColor;
 				context.lineWidth = 3;
-				roundedRect(context, x - 28, y - 28, 56, 56, 10);
+				context.beginPath();
+				context.arc(x, y, 30, 0, Math.PI * 2);
 				context.fill();
 				context.stroke();
 			} else if (scene.legalTargetIds.has(monster.id)) {
@@ -436,7 +492,8 @@ export class ArenaRenderer {
 				context.lineWidth = 3;
 				context.setLineDash([8, 6]);
 				context.lineDashOffset = -now * 0.03;
-				roundedRect(context, x - 27, y - 27, 54, 54, 10);
+				context.beginPath();
+				context.arc(x, y, 30, 0, Math.PI * 2);
 				context.stroke();
 				context.setLineDash([]);
 			}
@@ -504,7 +561,7 @@ export class ArenaRenderer {
 			const { x, y } = projectile.position;
 			const speed = Math.hypot(projectile.velocity.x, projectile.velocity.y) || 1;
 			const direction = { x: projectile.velocity.x / speed, y: projectile.velocity.y / speed };
-			const trail = 70 + projectile.power * 0.6;
+			const trail = 60 + projectile.power * 1.5;
 			const owner = scene.game.players[projectile.ownerId];
 			const tint = owner ? playerColor(owner, scene.humanId) : PALETTE.energy;
 			context.save();
@@ -543,6 +600,75 @@ export class ArenaRenderer {
 		}
 	}
 
+	private drawChainStrikes(context: CanvasRenderingContext2D, scene: Scene) {
+		const { game, humanId } = scene;
+		const cellSize = arenaGridMetrics(game.config).cellSize;
+		context.save();
+		context.font = '700 12px "Pixelify Sans", monospace';
+		context.textAlign = 'center';
+		for (const player of Object.values(game.players)) {
+			const tail = game.arena.monsters[player.chain.at(-1) ?? ''];
+			if (!tail) continue;
+			for (const target of Object.values(game.players)) {
+				const selected = player.chainTargetId === target.id;
+				if (!selected && (player.id !== humanId || !canChainStrikeTarget(game, player, target)))
+					continue;
+				if (target.mode === 'dead') continue;
+				const { x, y } = target.position;
+				context.strokeStyle = PALETTE.coral;
+				context.lineWidth = selected ? 3 : 1.5;
+				context.setLineDash(selected ? [7, 5] : [3, 5]);
+				context.strokeRect(
+					x - cellSize * 0.38,
+					y - cellSize * 0.38,
+					cellSize * 0.76,
+					cellSize * 0.76
+				);
+				if (selected) {
+					context.beginPath();
+					context.moveTo(tail.position.x, tail.position.y);
+					context.lineTo(x, y);
+					context.stroke();
+				}
+			}
+		}
+		context.setLineDash([]);
+		for (const strike of Object.values(game.chainStrikes)) {
+			const cell = game.arena.monsters[strike.cellId];
+			const origin = game.arena.monsters[strike.originCellId];
+			if (!cell || !origin) continue;
+			const remaining = Math.max(0, strike.hitAtMs - game.timeMs);
+			const progress = 1 - remaining / Math.max(1, strike.hitAtMs - strike.startedAtMs);
+			const color = remaining <= game.config.parryWindowMs ? PALETTE.energy : PALETTE.coral;
+			const { x, y } = cell.position;
+			context.fillStyle = 'rgba(255,107,102,0.12)';
+			context.fillRect(x - cellSize * 0.4, y - cellSize * 0.4, cellSize * 0.8, cellSize * 0.8);
+			context.strokeStyle = color;
+			context.lineWidth = 3;
+			context.strokeRect(x - cellSize * 0.4, y - cellSize * 0.4, cellSize * 0.8, cellSize * 0.8);
+			context.fillStyle = color;
+			context.fillRect(
+				x - cellSize * 0.4,
+				y + cellSize * 0.4 - 4,
+				cellSize * 0.8 * Math.max(0, Math.min(1, progress)),
+				4
+			);
+			context.lineWidth = 2;
+			context.setLineDash([6, 5]);
+			context.beginPath();
+			context.moveTo(origin.position.x, origin.position.y);
+			context.lineTo(x, y);
+			context.stroke();
+			context.setLineDash([]);
+			context.lineWidth = 4;
+			context.strokeStyle = PALETTE.ink;
+			const label = `${strike.damage} DMG · ${remaining <= game.config.parryWindowMs ? 'PARRY!' : 'STRIKE'}`;
+			context.strokeText(label, x, y + cellSize * 0.65);
+			context.fillText(label, x, y + cellSize * 0.65);
+		}
+		context.restore();
+	}
+
 	private drawPlayers(context: CanvasRenderingContext2D, scene: Scene) {
 		const { game, now, humanId } = scene;
 		const players = Object.values(game.players)
@@ -568,7 +694,7 @@ export class ArenaRenderer {
 			if (playerGrindstoneReady(game, player)) drawRainbowAura(context, x, y, local ? 42 : 36, now);
 			if (player.mode === 'parrying') this.sprite(context, SPRITE.parry, x, y, 84);
 			const flicker = player.mode === 'hit' && Math.floor(now / 55) % 2 === 0;
-			if (!flicker) this.sprite(context, SPRITE.hero, x, y, size);
+			if (!flicker) this.hero(context, player, game.config, x, y, size * 1.15);
 
 			if (game.timeMs < player.protectedUntilMs) {
 				context.save();
@@ -618,6 +744,16 @@ export class ArenaRenderer {
 		context.fillStyle = color;
 		context.fillText(label, x, top, 110);
 
+		const score = String(Math.round(player.score));
+		context.font = `700 ${local ? 12 : 11}px "Pixelify Sans", monospace`;
+		const chipWidth = Math.max(18, context.measureText(score).width + 10);
+		const chipLeft = x - plateWidth / 2 - chipWidth - 2;
+		context.fillStyle = PALETTE.gold;
+		roundedRect(context, chipLeft, top - 8, chipWidth, 24, 4);
+		context.fill();
+		context.fillStyle = PALETTE.ink;
+		context.fillText(score, chipLeft + chipWidth / 2, top + 4);
+
 		const maxHealth = player.maxHealth || maxHealthForScore(player.score, config);
 		const healthRatio = Math.max(0, Math.min(1, player.health / maxHealth));
 		const barLeft = x - barWidth / 2;
@@ -626,12 +762,18 @@ export class ArenaRenderer {
 		context.fillStyle = healthRatio > 0.35 ? '#6be7ac' : PALETTE.danger;
 		context.fillRect(barLeft, top + 7, barWidth * healthRatio, 4);
 
-		const powerRatio = Math.max(0, Math.min(1, player.power / config.powerCap));
-		const armed = player.power >= config.minFirePower;
-		context.fillStyle = '#16222e';
-		context.fillRect(barLeft, top + 12, barWidth, 2);
-		context.fillStyle = armed ? PALETTE.energy : '#3d7f8a';
-		context.fillRect(barLeft, top + 12, barWidth * powerRatio, 2);
+		// One pip per banked shot; the last pip fills toward the next shot.
+		const pips = 4;
+		const pipWidth = (barWidth - (pips - 1)) / pips;
+		const shots = player.power / config.shotCost;
+		for (let pip = 0; pip < pips; pip++) {
+			const left = barLeft + pip * (pipWidth + 1);
+			const fill = Math.max(0, Math.min(1, shots - pip));
+			context.fillStyle = '#16222e';
+			context.fillRect(left, top + 12, pipWidth, 2);
+			context.fillStyle = fill >= 1 ? PALETTE.energy : '#3d7f8a';
+			context.fillRect(left, top + 12, pipWidth * fill, 2);
+		}
 		context.restore();
 	}
 
@@ -640,6 +782,13 @@ export class ArenaRenderer {
 		const me = scene.game.players[scene.humanId];
 		if (!me || me.mode === 'dead') return null;
 		let soonest: { seconds: number; position: Point } | null = null;
+		for (const strike of Object.values(scene.game.chainStrikes)) {
+			if (strike.targetId !== me.id || strike.cellId !== me.cellId) continue;
+			const seconds = (strike.hitAtMs - scene.game.timeMs) / 1000;
+			const position = scene.game.players[strike.ownerId]?.position;
+			if (position && seconds > 0 && (!soonest || seconds < soonest.seconds))
+				soonest = { seconds, position };
+		}
 		for (const projectile of Object.values(scene.game.projectiles)) {
 			if (projectile.ownerId === me.id) continue;
 			const { seconds, miss } = approach(me.position, projectile.position, projectile.velocity);
@@ -720,7 +869,7 @@ export class ArenaRenderer {
 		const length = Math.hypot(dx, dy) || 1;
 		const range =
 			(scene.game.config.projectileSpeed * scene.game.config.projectileLifetimeMs) / 1000;
-		const armed = scene.aim.power >= scene.game.config.minFirePower;
+		const armed = scene.aim.power >= scene.game.config.shotCost;
 		const color = armed ? PALETTE.energy : '#8a7f9c';
 		context.save();
 		context.lineCap = 'round';
@@ -757,10 +906,16 @@ export class ArenaRenderer {
 		context.textBaseline = 'middle';
 		context.lineWidth = 4;
 		context.strokeStyle = PALETTE.ink;
-		const label = armed ? `ALL IN · ${Math.floor(scene.aim.power)}` : 'NEED POWER';
-		context.strokeText(label, x + 22, y - 16);
+		const label = armed
+			? `${scene.game.config.shotCost} PWR · ${scene.aim.damage} DMG`
+			: 'NEED POWER';
+		const rightEdge = scene.camera.x + scene.width / (2 * scene.camera.scale);
+		const flip = x + 22 + context.measureText(label).width > rightEdge - 12;
+		context.textAlign = flip ? 'right' : 'left';
+		const labelX = x + (flip ? -22 : 22);
+		context.strokeText(label, labelX, y - 16);
 		context.fillStyle = color;
-		context.fillText(label, x + 22, y - 16);
+		context.fillText(label, labelX, y - 16);
 		context.restore();
 	}
 

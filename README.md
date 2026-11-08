@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Chain monsters. Choose your payoff. Spend everything.</strong>
+  <strong>Chain monsters. Score. Charge Power.</strong>
   <br />
   A shared-board puzzle brawler where greed is a route, Power is a promise, and every shot leaves you exposed.
 </p>
@@ -19,26 +19,25 @@
 
 ## What is Grindion?
 
-Grindion is a competitive `.io` puzzle-combat game played on one continuously replenishing monster field. Drag through matching creatures to move and build a chain, then make the choice that drives the whole game:
+Grindion is a competitive `.io` puzzle-combat game played on one continuously replenishing monster field. Drag through matching creatures to move. Every monster you chain is worth 1 point and 5 Power. The top score wins the round, and your hero evolves into a new form at 50, 150, and 300 points.
 
-- **Bank Score** to grow tougher and heal.
-- **Forge Power** to arm one dodgeable, parryable, all-in projectile.
+With at least 15 Power stored, finish a chain on an adjacent opponent to strike them. The warning marks their cell: they can chain away or parry before impact. A finisher costs 15 Power and leaves you exposed during its windup.
 
-Firing empties your entire Power reserve. If the shot misses—or gets parried—you have just announced to the arena that you cannot defend. Long chains are lucrative, but they also make your route obvious and lock you out of attacking or parrying until you commit or cancel.
+Power has no cap, so you can bank several shots. Each shot costs 15 Power and deals 20 damage. Long chains are lucrative, but they also make your route obvious and lock you out of attacking or parrying until you commit or cancel.
 
 > [!NOTE]
-> This repository is a **playable, desktop-first vertical slice**: a fixed-seed seven-lesson tutorial, a five-minute solo arena, and instant online play in a server-owned arena. Empty seats are filled by bots; friends can join mid-round through an arena link. Legacy Supabase private room codes remain available for direct challenges.
+> This repository is a **playable, desktop-first vertical slice**: a fixed-seed six-lesson tutorial, a five-minute solo arena, and instant online play in a server-owned arena. Empty seats are filled by bots; friends can join mid-round through an arena link. Legacy Supabase private room codes remain available for direct challenges.
 
 ## Why it hits
 
-| System                 | The interesting decision                                                               |
-| ---------------------- | -------------------------------------------------------------------------------------- |
-| **Shared chains**      | Route greedily through one live board while rivals compete for the same monsters.      |
-| **Score vs. Power**    | Invest in lasting health, or trade the chain for immediate threat.                     |
-| **Rainbow Grindstone** | Chain five of one color to unlock a one-use switch into any adjacent color.            |
-| **All-in shots**       | Every projectile spends the full reserve, turning each attack into a commitment.       |
-| **Timing parries**     | A well-timed defense nullifies any shot, regardless of how powerful the attacker is.   |
-| **Comeback pressure**  | Leaders grow with diminishing returns while lower-Score players generate Power faster. |
+| System                 | The interesting decision                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------ |
+| **Shared chains**      | Route greedily through one live board while rivals compete for the same monsters.    |
+| **Simple scoring**     | Every monster is 1 point and 5 Power. Score raises max health; top score wins.       |
+| **Rainbow Grindstone** | Chain five of one color to unlock a one-use switch into any adjacent color.          |
+| **Banked shots**       | Power has no cap. Each shot costs 15, so a long chain can arm several shots.         |
+| **Timing parries**     | A well-timed defense nullifies any shot, regardless of how powerful the attacker is. |
+| **Equal charging**     | Every monster grants the same Power and every shot deals the same damage.            |
 
 ## Play it locally
 
@@ -55,24 +54,23 @@ Open the local URL printed by Vite, then start with **Play Tutorial** or jump di
 
 ## Controls
 
-| Input                                                                  | Action                                              |
-| ---------------------------------------------------------------------- | --------------------------------------------------- |
-| <kbd>Left drag</kbd> from your hero through matching adjacent monsters | Build a route and chain                             |
-| Release                                                                | Move to the chain endpoint and bank Score           |
-| <kbd>Shift</kbd> + release                                             | Move to the endpoint and convert the chain to Power |
-| Hold <kbd>Right mouse</kbd>                                            | Aim, scout, and zoom out                            |
-| Release <kbd>Right mouse</kbd>                                         | Fire every point of stored Power                    |
-| <kbd>Space</kbd>                                                       | Parry an incoming projectile                        |
-| <kbd>Escape</kbd>                                                      | Cancel the active chain                             |
-| <kbd>?</kbd> or <kbd>H</kbd>                                           | Show every control and the rules in-game            |
+| Input                                                                  | Action                                   |
+| ---------------------------------------------------------------------- | ---------------------------------------- |
+| <kbd>Left drag</kbd> from your hero through matching adjacent monsters | Build a route and chain                  |
+| Release                                                                | Move to the endpoint and charge Power    |
+| Hold <kbd>Right mouse</kbd>                                            | Aim, scout, and zoom out                 |
+| Release <kbd>Right mouse</kbd>                                         | Spend 15 Power to fire a shot            |
+| <kbd>Space</kbd>                                                       | Parry an incoming projectile             |
+| <kbd>Escape</kbd>                                                      | Cancel the active chain                  |
+| <kbd>?</kbd> or <kbd>H</kbd>                                           | Show every control and the rules in-game |
 
 ### The loop in 20 seconds
 
 1. Start next to a monster and drag through adjacent creatures of the same color.
-2. Release normally for Score, or hold <kbd>Shift</kbd> while releasing for Power.
+2. Release to score 1 point and 5 Power per monster.
 3. Keep chaining one color to prime a rainbow color switch after five monsters.
 4. Spend Power on a predicted shot—or save enough to parry.
-5. Never forget: while you are chaining, you are vulnerable; after you fire, you are empty.
+5. Never forget: while you are chaining, you are vulnerable.
 
 ## Realtime multiplayer architecture
 

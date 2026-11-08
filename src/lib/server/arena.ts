@@ -50,6 +50,7 @@ export class ArenaRoom {
 		player.isBot = true;
 		player.name = 'Bot';
 		player.chain = [];
+		player.chainTargetId = null;
 		if (player.mode === 'chaining') player.mode = 'neutral';
 		this.intents = this.intents.filter((intent) => intent.playerId !== id);
 		delete this.receivedSequences[id];
@@ -93,6 +94,13 @@ export class ArenaRoom {
 	}
 
 	private removeProjectiles(id: string) {
+		for (const [key, strike] of Object.entries(this.state.chainStrikes)) {
+			if (strike.ownerId === id || strike.targetId === id) {
+				const owner = this.state.players[strike.ownerId];
+				if (owner?.mode === 'striking') owner.mode = 'neutral';
+				delete this.state.chainStrikes[key];
+			}
+		}
 		for (const [key, projectile] of Object.entries(this.state.projectiles)) {
 			if (projectile.ownerId === id) delete this.state.projectiles[key];
 		}

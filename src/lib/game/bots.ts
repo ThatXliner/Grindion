@@ -1,4 +1,5 @@
 import { distance, normalize } from './arena';
+import { canChainStrikeTarget } from './chainAttack';
 import { canExtendWithColor } from './chainRules';
 import { hashSeed, randomFrom } from './prng';
 import type { GameIntent, GameState, Monster, PlayerState, Vec2 } from './types';
@@ -84,7 +85,7 @@ export function createBotController(
 			for (const player of Object.values(state.players)
 				.filter((candidate) => candidate.isBot)
 				.sort((a, b) => a.id.localeCompare(b.id))) {
-				if (player.mode === 'dead' || player.mode === 'hit') continue;
+				if (player.mode === 'dead' || player.mode === 'hit' || player.mode === 'striking') continue;
 				const random = randomFrom(hashSeed(randomState, state.tick + player.id.length));
 				randomState = random.state;
 				const hostile = Object.values(state.projectiles).find((projectile) => {
@@ -98,12 +99,17 @@ export function createBotController(
 						projectile.velocity.x * toPlayer.x + projectile.velocity.y * toPlayer.y > 0
 					);
 				});
-				if (hostile && player.chain.length) {
+				const incomingStrike = Object.values(state.chainStrikes).find(
+					(strike) => strike.targetId === player.id && strike.cellId === player.cellId
+				);
+				if ((hostile || incomingStrike) && player.chain.length) {
 					intents.push({ type: 'chain-cancel', playerId: player.id });
 					continue;
 				}
 				if (
-					hostile &&
+					(hostile ||
+						(incomingStrike &&
+							incomingStrike.hitAtMs - state.timeMs <= state.config.parryWindowMs)) &&
 					player.power >= state.config.parryMinimum &&
 					state.timeMs >= player.parryCooldownUntilMs
 				) {
@@ -111,6 +117,16 @@ export function createBotController(
 					continue;
 				}
 				if (player.chain.length) {
+					const opponent = Object.values(state.players).find((target) =>
+						canChainStrikeTarget(state, player, target)
+					);
+					if (opponent && roll() < tuning.fireChance) {
+						intents.push(
+							{ type: 'chain-target', playerId: player.id, targetId: opponent.id },
+							{ type: 'chain-commit', playerId: player.id }
+						);
+						continue;
+					}
 					const tail = state.arena.monsters[player.chain[player.chain.length - 1]!]!;
 					const chainColors = player.chain.map((id) => state.arena.monsters[id]!.color);
 					const candidates = tail.neighborIds
@@ -131,8 +147,7 @@ export function createBotController(
 					else if (player.chain.length >= state.config.minChain)
 						intents.push({
 							type: 'chain-commit',
-							playerId: player.id,
-							conversion: player.power < 35 ? 'power' : 'score'
+							playerId: player.id
 						});
 					else intents.push({ type: 'chain-cancel', playerId: player.id });
 					continue;

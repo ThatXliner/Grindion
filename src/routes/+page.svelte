@@ -4,12 +4,15 @@
 	import { ArenaClient } from '$lib/online/arenaClient';
 	import { SvelteMap } from 'svelte/reactivity';
 	import {
+		arenaGridMetrics,
 		canExtendWithColor,
-		chainValue,
+		canChainStrikeTarget,
+		chainScore,
 		configureTutorialRoute,
 		createBotController,
 		createChainMotionTiming,
 		createGame,
+		DEFAULT_CONFIG,
 		grindstoneState,
 		LIVE_ARENA_CONFIG,
 		maxHealthForScore,
@@ -26,6 +29,13 @@
 		SPRITE_FRAMES
 	} from '$lib/render/arenaRenderer';
 	import type { Camera, ChainAnimation, Point } from '$lib/render/arenaRenderer';
+	import {
+		HERO_FORM_SHEET,
+		HERO_FORMS,
+		heroFormForScore,
+		nextHeroFormForScore
+	} from '$lib/render/heroForms';
+	import TrailerSection from '$lib/components/TrailerSection.svelte';
 	import { getSupabaseBrowserClient, isSupabaseConfigured } from '$lib/supabase/client';
 	import {
 		cleanPlayerName,
@@ -43,6 +53,13 @@
 	type LobbyStatus = 'idle' | 'connecting' | 'lobby';
 	type FeedTone = 'gold' | 'energy' | 'coral' | 'violet' | 'neutral';
 
+	const {
+		minChain: MIN_CHAIN,
+		powerPerMonster: POWER_PER_MONSTER,
+		shotCost: SHOT_COST,
+		grindstoneStreak: GRINDSTONE_STREAK
+	} = DEFAULT_CONFIG;
+
 	const TUTORIAL_STEPS = [
 		{
 			title: 'Choose a route',
@@ -51,23 +68,22 @@
 				'Press and hold on your hero—not a monster—then drag into the cyan-outlined coral.'
 		},
 		{
-			title: 'Move + bank',
-			copy: 'Release—or press 5, S, or Enter—to claim Score and land on the final creature.',
-			mobileCopy: 'Release to claim Score and land on the final creature.'
+			title: 'Move + charge',
+			copy: `Release—or press 5, S, or Enter—to land on the final creature. Every chain charges ${POWER_PER_MONSTER} Power per monster.`,
+			mobileCopy: `Release to land on the final creature. Every chain charges ${POWER_PER_MONSTER} Power per monster.`
 		},
 		{
-			title: 'Grow tougher',
-			copy: 'Paths have no distance limit. Banking Score increases max health logarithmically: early points help most.'
-		},
-		{
-			title: 'Charge Power',
-			copy: 'Right-drag from your hero through another chain, or press Numpad +, to store it as Power.',
-			mobileCopy: 'Power mode is selected below. Build another chain and release to convert it.'
+			title: 'Score',
+			copy: `Every monster you chain is also 1 point. Score raises your max health, and the top score wins the round. Your hero evolves at ${HERO_FORMS.slice(
+				1
+			)
+				.map((form) => form.minScore)
+				.join(', ')} points.`
 		},
 		{
 			title: 'Take the shot',
-			copy: 'Hold right mouse to scout and aim. Release to fire every volt.',
-			mobileCopy: 'Tap Aim + Fire, drag across the board to aim, then release to fire every volt.'
+			copy: `Hold right mouse to scout and aim. Release to fire. Each shot costs ${SHOT_COST} Power.`,
+			mobileCopy: `Tap Aim + Fire, drag across the board to aim, then release to fire. Each shot costs ${SHOT_COST} Power.`
 		},
 		{
 			title: 'Parry',
@@ -84,47 +100,46 @@
 		{
 			sprite: SPRITE.coral,
 			title: 'Chain',
-			copy: 'Drag from your hero through matching neighbors. The route is how you move.'
+			copy: `Drag from your hero through matching neighbors. The route is how you move, and every chain of ${MIN_CHAIN}+ charges Power. With stored Power, finish on an adjacent opponent to strike.`
 		},
 		{
 			sprite: SPRITE.gold,
-			title: 'Choose',
-			copy: 'Release to bank Score and grow tougher, or right-drag to store the chain as Power.'
+			title: 'Score',
+			copy: `Every monster you chain is 1 point and +${POWER_PER_MONSTER} Power. Score raises your max health. The top score wins.`
 		},
 		{
 			sprite: SPRITE.bolt,
 			title: 'Commit',
-			copy: 'A shot spends all your Power. A well-timed parry stops any shot.'
+			copy: `Each shot costs ${SHOT_COST} Power. Unused Power stays banked for the next one. A well-timed parry stops any shot.`
 		},
 		{
 			sprite: SPRITE.cyan,
 			title: 'Grind',
-			copy: 'Chain 5 of one color to unlock one rainbow switch to any neighbor.'
+			copy: `Chain ${GRINDSTONE_STREAK} of one color to unlock one rainbow switch to any neighbor.`
 		}
 	] as const;
 
 	let canvas: HTMLCanvasElement;
-	let game = $state<GameState | null>(null);
+	let game = $state.raw<GameState | null>(null);
 	let humanId = $state('human');
 	let mode = $state<GameMode>('title');
 	let isRunning = $state(false);
 	let isDragging = $state(false);
-	let dragConversion = $state<'score' | 'power'>('score');
-	let dragButton = 0;
 	let isAiming = $state(false);
 	let pointerOverPlayer = $state(false);
 	let hasCommittedChain = $state(false);
 	let useTouchControls = $state(false);
 	let mobileAimArmed = $state(false);
-	let mobileConversion = $state<'score' | 'power'>('score');
 	let deathRecap = $state<DeathRecap | null>(null);
 	let pointerWorld = $state<Point>({ x: 720, y: 450 });
 	let showHelp = $state(false);
 	let showStandings = $state(false);
 	let latestChainMonster = '';
-	let optimisticChainIds: string[] = [];
+	let optimisticChainIds = $state.raw<string[]>([]);
+	let selectedChainTargetId = $state<string | null>(null);
 	let previousDragPoint: Point | null = null;
-	let commitAfterTick: 'score' | 'power' | null = null;
+	let commitAfterTick = false;
+	let predictedCommit: { sequence: number; animation: ChainAnimation } | null = null;
 	let eventFeed = $state<{ id: number; text: string; tone: FeedTone }[]>([]);
 	let eventId = 0;
 	let tutorialStep = $state(0);
@@ -218,13 +233,32 @@
 	const monsters = $derived(game ? Object.values(game.arena.monsters) : []);
 	const me = $derived(players.find((player) => player.id === humanId) ?? players[0]);
 	const score = $derived(Math.round(me?.score ?? 0));
+	const heroForm = $derived(heroFormForScore(score));
+	const nextHeroForm = $derived(nextHeroFormForScore(score));
+	const formProgress = $derived(
+		nextHeroForm
+			? ((score - heroForm.minScore) / (nextHeroForm.minScore - heroForm.minScore)) * 100
+			: 100
+	);
+	const damage = $derived(game?.config.shotDamage ?? DEFAULT_CONFIG.shotDamage);
 	const maxHealth = $derived(me?.maxHealth ?? maxHealthForScore(me?.score ?? 0));
 	const health = $derived(Math.max(0, me?.health ?? maxHealth));
 	const power = $derived(Math.max(0, me?.power ?? 0));
-	const powerCap = $derived(game?.config.powerCap ?? 120);
-	const minFirePower = $derived(game?.config.minFirePower ?? 10);
-	const chainLength = $derived(me?.chain.length ?? 0);
+	const shotCost = $derived(game?.config.shotCost ?? SHOT_COST);
+	const shotsBanked = $derived(Math.floor(power / shotCost));
+	const visibleChain = $derived(isDragging ? optimisticChainIds : (me?.chain ?? []));
+	const chainLength = $derived(visibleChain.length);
 	const isDead = $derived(me?.mode === 'dead');
+	const isStriking = $derived(me?.mode === 'striking');
+	const visibleTargetId = $derived(
+		isDragging || optimisticChainIds.length ? selectedChainTargetId : me?.chainTargetId
+	);
+	const incomingStrike = $derived(
+		game &&
+			Object.values(game.chainStrikes).find(
+				(strike) => strike.targetId === humanId && strike.cellId === me?.cellId
+			)
+	);
 	const respawnRemainingMs = $derived(
 		isDead && game && me ? Math.max(0, me.respawnAtMs - game.timeMs) : 0
 	);
@@ -232,7 +266,17 @@
 	const respawnProgress = $derived(
 		game ? Math.max(0, Math.min(100, 100 - (respawnRemainingMs / game.config.respawnMs) * 100)) : 0
 	);
-	const grindstoneReady = $derived(me ? playerGrindstone(me).ready : false);
+	const chainColors = $derived(
+		visibleChain
+			.map((id) => game?.arena.monsters[id]?.color)
+			.filter((color): color is Monster['color'] => Boolean(color))
+	);
+	const grindstoneReady = $derived(
+		grindstoneState(chainColors, game?.config.grindstoneStreak ?? GRINDSTONE_STREAK).ready
+	);
+	const chainCanCommit = $derived(chainLength >= (game?.config.minChain ?? MIN_CHAIN));
+	const chainPowerLabel = $derived(`+${powerGain(chainLength, game?.config)} POWER`);
+	const chainPoints = $derived(chainScore(chainLength, game?.config));
 	const secondsLeft = $derived(
 		Math.max(0, Math.ceil(((game?.roundEndsAtMs ?? 300_000) - (game?.timeMs ?? 0)) / 1000))
 	);
@@ -315,6 +359,7 @@
 		humanId = '';
 		attractBots.reset();
 		renderer.reset();
+		predictedCommit = null;
 		chainAnimations.clear();
 		camera = { x: game.arena.width / 2, y: game.arena.height / 2, scale: camera.scale };
 	}
@@ -374,6 +419,13 @@
 					startSession('arena');
 				},
 				onSnapshot: acceptRemoteSnapshot,
+				onInputProcessed: (sequence) => {
+					if (!predictedCommit || sequence < predictedCommit.sequence) return;
+					// A commit event consumes the prediction; otherwise the server rejected it.
+					if (chainAnimations.get(humanId) === predictedCommit.animation)
+						chainAnimations.delete(humanId);
+					predictedCommit = null;
+				},
 				onDisconnect: (message) => {
 					isRunning = false;
 					lobbyError = message;
@@ -549,10 +601,9 @@
 		startSession('tutorial');
 	}
 
-	function continueAfterGrowthLesson() {
+	function continueAfterScoreLesson() {
 		if (mode !== 'tutorial' || tutorialStep !== 2 || !game) return;
-		stageTutorialRoute(game, 'cyan');
-		mobileConversion = 'power';
+		game.players[humanId]!.power = Math.max(game.players[humanId]!.power, game.config.initialPower);
 		tutorialStep = 3;
 	}
 
@@ -561,17 +612,16 @@
 		eventFeed = [];
 		isRunning = true;
 		isDragging = false;
-		dragButton = 0;
-		dragConversion = 'score';
 		isAiming = false;
 		pointerOverPlayer = false;
 		hasCommittedChain = false;
 		mobileAimArmed = false;
-		mobileConversion = 'score';
 		deathRecap = null;
 		showHelp = false;
 		showStandings = false;
 		optimisticChainIds = [];
+		selectedChainTargetId = null;
+		predictedCommit = null;
 		chainAnimations.clear();
 		renderer.reset();
 		if (game) {
@@ -608,7 +658,14 @@
 	function addEvent(event: GameEvent) {
 		if (game) renderer.handleEvent(event, game, humanId);
 		if (event.type === 'chain-committed' && game) {
-			if (event.playerId === humanId) hasCommittedChain = true;
+			const predictedAnimation =
+				event.playerId === humanId ? predictedCommit?.animation : undefined;
+			const matchesPrediction =
+				predictedAnimation?.nodes.map((node) => node.id).join(',') === event.monsterIds.join(',');
+			if (event.playerId === humanId) {
+				hasCommittedChain = true;
+				predictedCommit = null;
+			}
 			const nodes = event.monsterIds
 				.map((id) => game?.arena.monsters[id])
 				.filter(Boolean)
@@ -617,7 +674,7 @@
 					position: { ...monster!.position },
 					color: monster!.color
 				}));
-			if (nodes.length) {
+			if (nodes.length && !matchesPrediction) {
 				chainAnimations.set(event.playerId, {
 					playerId: event.playerId,
 					origin: { ...event.origin },
@@ -629,7 +686,20 @@
 		}
 		let text = '';
 		let tone: FeedTone = 'neutral';
-		if (event.type === 'projectile-parried') {
+		if (event.type === 'chain-strike-started') {
+			text =
+				event.playerId === humanId
+					? 'STRIKE COMMITTED'
+					: event.targetId === humanId
+						? 'STRIKE INCOMING'
+						: '';
+			tone = 'coral';
+		} else if (event.type === 'chain-strike-ended') {
+			if (event.playerId === humanId || event.targetId === humanId) {
+				text = `STRIKE ${event.outcome.toUpperCase()}`;
+				tone = event.outcome === 'parried' ? 'energy' : 'coral';
+			}
+		} else if (event.type === 'projectile-parried') {
 			text = event.playerId === humanId ? 'PERFECT PARRY' : 'SHOT PARRIED';
 			tone = 'energy';
 		} else if (event.type === 'projectile-fired' && event.playerId === humanId) {
@@ -640,11 +710,16 @@
 			const killer = event.byPlayerId === humanId ? 'YOU' : game?.players[event.byPlayerId]?.name;
 			text = `${killer ?? 'A RIVAL'} SHATTERED ${victim ?? 'A RIVAL'}`;
 			tone = 'coral';
-		} else if (event.type === 'chain-committed' && event.playerId === humanId) {
-			text = event.conversion === 'power' ? 'CHAIN → POWER' : 'CHAIN BANKED';
-			tone = event.conversion === 'power' ? 'violet' : 'gold';
+		} else if (event.type === 'chain-committed' && event.playerId === humanId && game) {
+			text = `+${event.powerGained} POWER · +${event.value} SCORE`;
+			tone = 'gold';
 		}
 		if (text) addFeedMessage(text, tone);
+		if (event.type === 'chain-committed' && event.playerId === humanId) {
+			const form = heroFormForScore(event.scoreBefore + event.value);
+			if (form !== heroFormForScore(event.scoreBefore))
+				addFeedMessage(`EVOLVED · ${form.name.toUpperCase()}`, 'violet');
+		}
 		if (event.type === 'player-died' && event.playerId === humanId) {
 			deathRecap = {
 				killerName: game?.players[event.byPlayerId]?.name ?? 'Unknown rival',
@@ -652,7 +727,7 @@
 			};
 			cancelControls();
 			queuedIntents = [];
-			commitAfterTick = null;
+			commitAfterTick = false;
 		} else if (event.type === 'player-respawned' && event.playerId === humanId) {
 			deathRecap = null;
 			addFeedMessage(
@@ -662,52 +737,30 @@
 		}
 
 		if (mode !== 'tutorial') return;
-		if (tutorialStep === 5 && event.type === 'player-damaged' && event.playerId === humanId) {
+		if (tutorialStep === 4 && event.type === 'player-damaged' && event.playerId === humanId) {
 			const human = game?.players[humanId];
 			if (human) {
 				human.health = human.maxHealth;
 				human.mode = 'neutral';
 			}
 		}
-		if (
-			tutorialStep === 1 &&
-			event.type === 'chain-committed' &&
-			event.playerId === humanId &&
-			event.conversion === 'score'
-		) {
+		if (tutorialStep === 1 && event.type === 'chain-committed' && event.playerId === humanId) {
 			tutorialRouteIds = [];
 			tutorialStep = 2;
 		} else if (
-			tutorialStep === 1 &&
-			event.type === 'chain-committed' &&
-			event.playerId === humanId &&
-			event.conversion === 'power' &&
-			game
-		) {
-			stageTutorialRoute(game, 'coral');
-			tutorialStep = 0;
-		} else if (
 			tutorialStep === 3 &&
-			event.type === 'chain-committed' &&
-			event.playerId === humanId &&
-			event.conversion === 'power'
-		) {
-			tutorialRouteIds = [];
-			tutorialStep = 4;
-		} else if (
-			tutorialStep === 4 &&
 			event.type === 'projectile-fired' &&
 			event.playerId === humanId
 		) {
-			tutorialStep = 5;
+			tutorialStep = 4;
 			if (game?.players[humanId]) game.players[humanId]!.power = 15;
 			tutorialShotAt = (game?.timeMs ?? 0) + 1100;
 		} else if (
-			tutorialStep === 5 &&
+			tutorialStep === 4 &&
 			event.type === 'projectile-parried' &&
 			event.playerId === humanId
 		)
-			tutorialStep = 6;
+			tutorialStep = 5;
 	}
 
 	function addFeedMessage(text: string, tone: FeedTone) {
@@ -716,15 +769,14 @@
 
 	let queuedIntents: GameIntent[] = [];
 	function dispatch(intent: HumanIntent) {
-		if (!game || !isRunning || isDead) return;
+		if (!game || !isRunning || isDead || isStriking) return;
 		const gameIntent = { ...intent, playerId: humanId } as GameIntent;
 		if (serverArena) serverArena.sendIntent(gameIntent);
 		else if (lobbyRole === 'guest' && multiplayerRoom) void multiplayerRoom.sendIntent(gameIntent);
 		else queuedIntents.push(gameIntent);
 	}
 
-	function canvasPoint(event: PointerEvent): Point {
-		const rect = canvas.getBoundingClientRect();
+	function canvasPoint(event: PointerEvent, rect = canvas.getBoundingClientRect()): Point {
 		return {
 			x: camera.x + (event.clientX - rect.left - rect.width / 2) / camera.scale,
 			y: camera.y + (event.clientY - rect.top - rect.height / 2) / camera.scale
@@ -772,7 +824,7 @@
 	function legalTargetIds(): Set<string> {
 		const ids: string[] = [];
 		if (!game || !me || mode === 'title' || isDead || isAiming) return new Set(ids);
-		const chain = optimisticChainIds.length ? optimisticChainIds : me.chain;
+		const chain = visibleChain;
 		if (!chain.length && !isDragging) return new Set(ids);
 		const source = game.arena.monsters[chain.at(-1) ?? me.cellId];
 		const colors = chain
@@ -788,31 +840,77 @@
 	}
 
 	function chainPreview() {
-		if (!game || !me || !me.chain.length || mode === 'title') return null;
-		const length = me.chain.length;
-		if (length < game.config.minChain)
-			return { text: `${length}/${game.config.minChain} TO COMMIT`, color: '#c9bde6' };
-		const conversion = useTouchControls ? mobileConversion : isDragging ? dragConversion : null;
-		const scoreGain = chainValue(length);
-		const powerGained = powerGain(length, me.score, game.config);
-		if (conversion === 'score') return { text: `+${scoreGain} SCORE`, color: PALETTE.gold };
-		if (conversion === 'power') return { text: `+${powerGained} POWER`, color: PALETTE.energy };
-		return { text: `+${scoreGain} SCORE · +${powerGained} PWR`, color: PALETTE.parchment };
+		if (!game || !me || !visibleChain.length || mode === 'title') return null;
+		if (visibleTargetId)
+			return { text: `STRIKE · ${damage} DMG · ${shotCost} POWER`, color: PALETTE.coral };
+		if (!chainCanCommit)
+			return { text: `${chainLength}/${game.config.minChain} TO CHARGE`, color: '#c9bde6' };
+		return { text: `${chainPowerLabel} · +${chainPoints} SCORE`, color: PALETTE.gold };
 	}
 
 	function chainTargetsAlong(start: Point, end: Point) {
 		// Keep mobile circles large enough for a thumb, but below the 47.7-unit
 		// center-to-corner distance so orthogonal tiles cannot steal a diagonal swipe.
 		const hitRadius = useTouchControls ? 40 : 35;
-		return monsters
-			.map((monster) => ({ monster, ...segmentHit(monster, start, end) }))
-			.filter(({ monster, distance }) => monster.alive && distance <= hitRadius)
-			.sort(
-				(a, b) =>
-					a.progress - b.progress ||
-					a.distance - b.distance ||
-					a.monster.id.localeCompare(b.monster.id)
-			);
+		const hits: { monster: Monster; progress: number; distance: number }[] = [];
+		const left = Math.min(start.x, end.x) - hitRadius;
+		const right = Math.max(start.x, end.x) + hitRadius;
+		const top = Math.min(start.y, end.y) - hitRadius;
+		const bottom = Math.max(start.y, end.y) + hitRadius;
+		for (const monster of monsters) {
+			if (
+				!monster.alive ||
+				monster.position.x < left ||
+				monster.position.x > right ||
+				monster.position.y < top ||
+				monster.position.y > bottom
+			)
+				continue;
+			const hit = segmentHit(monster, start, end);
+			// Endpoint overlap is resolved by nearest distance below; don't re-hit the departure.
+			if (hit.progress > 0 && hit.progress < 1 && hit.distance <= hitRadius)
+				hits.push({ monster, ...hit });
+		}
+		return hits.sort((a, b) => a.progress - b.progress || a.distance - b.distance);
+	}
+
+	function snapChainTarget(point: Point) {
+		if (!game || !me) return;
+		const tail = optimisticChainIds.at(-1);
+		const source = game.arena.monsters[tail ?? me.cellId];
+		// Stay below half a tile diagonal so neighboring circles don't steal diagonal swipes.
+		const radius = arenaGridMetrics(game.config).cellSize * (useTouchControls ? 0.68 : 0.65);
+		const target = Object.values(game.players).find(
+			(target) =>
+				canChainStrikeTarget(game!, me!, target, optimisticChainIds) &&
+				Math.hypot(target.position.x - point.x, target.position.y - point.y) <= radius
+		);
+		if (target) {
+			selectPlayerTarget(target.id);
+			return;
+		}
+		if (selectedChainTargetId) selectPlayerTarget(null);
+		let nearest: Monster | undefined;
+		let nearestSquared = radius * radius;
+		const candidates = new Set([...(source?.neighborIds ?? []), ...optimisticChainIds]);
+		for (const id of candidates) {
+			const monster = game.arena.monsters[id];
+			if (!monster?.alive || (id !== tail && !isLegalChainTarget(monster))) continue;
+			const dx = monster.position.x - point.x;
+			const dy = monster.position.y - point.y;
+			const squared = dx * dx + dy * dy;
+			if (squared <= nearestSquared) {
+				nearestSquared = squared;
+				nearest = monster;
+			}
+		}
+		if (nearest) selectChainTarget(nearest);
+	}
+
+	function selectPlayerTarget(targetId: string | null) {
+		if (targetId === selectedChainTargetId) return;
+		selectedChainTargetId = targetId;
+		dispatch({ type: 'chain-target', targetId });
 	}
 
 	function selectChainTarget(monster: Monster) {
@@ -823,13 +921,14 @@
 			existingIndex >= 0
 				? optimisticChainIds.slice(0, existingIndex + 1)
 				: [...optimisticChainIds, monster.id];
+		selectedChainTargetId = null;
 		latestChainMonster = monster.id;
 		dispatch({ type: intentType, monsterId: monster.id });
 		return true;
 	}
 
 	function onPointerDown(event: PointerEvent) {
-		if (mode === 'title' || isDead || chainAnimations.has(humanId)) return;
+		if (mode === 'title' || isDead || isStriking || chainAnimations.has(humanId)) return;
 		canvas.setPointerCapture(event.pointerId);
 		pointerWorld = canvasPoint(event);
 		if (!me) return;
@@ -841,19 +940,17 @@
 			distanceFromPlayer <=
 			Math.max(useTouchControls ? 52 : 38, (game?.config.playerRadius ?? 18) * 2);
 		const mobileShot = useTouchControls && mobileAimArmed && event.button === 0;
-		if (mobileShot || (event.button === 2 && !startsOnPlayer)) {
+		// Right mouse always aims; only a left-drag from the hero builds a route.
+		if (mobileShot || event.button === 2) {
 			event.preventDefault();
 			isAiming = true;
 			return;
 		}
-		if ((event.button !== 0 && event.button !== 2) || !startsOnPlayer) return;
-		if (event.button === 2) event.preventDefault();
+		if (event.button !== 0 || !startsOnPlayer) return;
 		isDragging = true;
-		dragButton = event.button;
-		dragConversion =
-			event.button === 2 || (useTouchControls && mobileConversion === 'power') ? 'power' : 'score';
 		latestChainMonster = '';
 		optimisticChainIds = [];
+		selectedChainTargetId = null;
 		previousDragPoint = pointerWorld;
 	}
 
@@ -869,6 +966,7 @@
 		for (const { monster } of chainTargetsAlong(start, pointerWorld)) {
 			selectChainTarget(monster);
 		}
+		snapChainTarget(pointerWorld);
 		previousDragPoint = pointerWorld;
 	}
 
@@ -876,7 +974,8 @@
 		if (mode === 'title') return;
 		const coalesced = event.getCoalescedEvents?.() ?? [];
 		const samples = coalesced.length ? coalesced : [event];
-		for (const sample of samples) updatePointerState(canvasPoint(sample));
+		const rect = canvas.getBoundingClientRect();
+		for (const sample of samples) updatePointerState(canvasPoint(sample, rect));
 	}
 
 	function onPointerUp(event: PointerEvent) {
@@ -892,23 +991,54 @@
 			dispatch({ type: 'fire', direction: { x: dx / length, y: dy / length } });
 			return;
 		}
-		if (!isDragging || event.button !== dragButton) return;
+		if (!isDragging || event.button !== 0) return;
+		updatePointerState(canvasPoint(event));
 		isDragging = false;
-		dragButton = 0;
 		previousDragPoint = null;
 		if (!latestChainMonster) {
 			dispatch({ type: 'chain-cancel' });
 			return;
 		}
 		latestChainMonster = '';
+		const route = optimisticChainIds;
 		optimisticChainIds = [];
-		const conversion = event.shiftKey ? 'power' : dragConversion;
-		if (lobbyRole === 'guest') dispatch({ type: 'chain-commit', conversion });
-		else commitAfterTick = conversion;
+		selectedChainTargetId = null;
+		if (
+			isRunning &&
+			serverArena?.supportsPrediction &&
+			game &&
+			me &&
+			route.length >= game.config.minChain
+		) {
+			const sequence = serverArena.sendIntent({ type: 'chain-commit', playerId: humanId });
+			if (sequence !== undefined) {
+				const animation: ChainAnimation = {
+					playerId: humanId,
+					origin: { ...me.position },
+					nodes: route.map((id) => {
+						const monster = game!.arena.monsters[id]!;
+						return { id, position: { ...monster.position }, color: monster.color };
+					}),
+					startedAt: performance.now(),
+					timing: createChainMotionTiming(route.length)
+				};
+				predictedCommit = { sequence, animation };
+				chainAnimations.set(humanId, animation);
+			}
+		} else if (lobbyRole === 'guest') dispatch({ type: 'chain-commit' });
+		else commitAfterTick = true;
 	}
 
 	function toggleMobileAim() {
-		if (!game || !me || mode === 'title' || isDead || isDragging || chainAnimations.has(humanId))
+		if (
+			!game ||
+			!me ||
+			mode === 'title' ||
+			isDead ||
+			isStriking ||
+			isDragging ||
+			chainAnimations.has(humanId)
+		)
 			return;
 		mobileAimArmed = !mobileAimArmed;
 		isAiming = mobileAimArmed;
@@ -916,12 +1046,34 @@
 	}
 
 	function selectNumpadDirection(direction: Point) {
-		if (!game || !me || mode === 'title' || isDead || isAiming || chainAnimations.has(humanId))
+		if (
+			!game ||
+			!me ||
+			mode === 'title' ||
+			isDead ||
+			isStriking ||
+			isAiming ||
+			chainAnimations.has(humanId)
+		)
 			return;
 		if (!optimisticChainIds.length && me.chain.length) optimisticChainIds = [...me.chain];
 		const sourceId = optimisticChainIds.at(-1) ?? me.cellId;
 		const source = game.arena.monsters[sourceId];
 		if (!source) return;
+		if (selectedChainTargetId) {
+			selectPlayerTarget(null);
+			return;
+		}
+		const opponent = Object.values(game.players).find(
+			(target) =>
+				Math.sign(target.position.x - source.position.x) === direction.x &&
+				Math.sign(target.position.y - source.position.y) === direction.y &&
+				canChainStrikeTarget(game!, me!, target, optimisticChainIds)
+		);
+		if (opponent) {
+			selectPlayerTarget(opponent.id);
+			return;
+		}
 		const target = source.neighborIds
 			.map((id) => game?.arena.monsters[id])
 			.find(
@@ -935,13 +1087,14 @@
 
 	function resetOptimisticChain() {
 		optimisticChainIds = [];
+		selectedChainTargetId = null;
 		latestChainMonster = '';
 		previousDragPoint = null;
 	}
 
-	function commitNumpadChain(conversion: 'score' | 'power') {
+	function commitNumpadChain() {
 		if (!optimisticChainIds.length && !me?.chain.length) return;
-		dispatch({ type: 'chain-commit', conversion });
+		dispatch({ type: 'chain-commit' });
 		resetOptimisticChain();
 	}
 
@@ -953,6 +1106,8 @@
 	function onKeyDown(event: KeyboardEvent) {
 		if (mode === 'title') {
 			if (event.target instanceof HTMLInputElement) return;
+			// Keys pressed on the trailer's player (space, arrows, letters) must not start a game.
+			if (event.target instanceof Element && event.target.closest('[data-trailer]')) return;
 			if (event.code === 'KeyT') {
 				event.preventDefault();
 				startTutorial();
@@ -992,17 +1147,7 @@
 			event.key === 'Enter'
 		) {
 			event.preventDefault();
-			commitNumpadChain('score');
-			return;
-		}
-		if (
-			event.code === 'NumpadAdd' ||
-			event.code === 'KeyF' ||
-			event.key === '+' ||
-			event.key.toLowerCase() === 'f'
-		) {
-			event.preventDefault();
-			commitNumpadChain('power');
+			commitNumpadChain();
 			return;
 		}
 		if (
@@ -1028,28 +1173,19 @@
 
 	function cancelControls() {
 		isDragging = false;
-		dragButton = 0;
-		dragConversion = 'score';
 		isAiming = false;
 		mobileAimArmed = false;
 		pointerOverPlayer = false;
 		optimisticChainIds = [];
+		selectedChainTargetId = null;
 		previousDragPoint = null;
-	}
-
-	function playerGrindstone(player: PlayerState) {
-		return grindstoneState(
-			player.chain
-				.map((id) => game?.arena.monsters[id]?.color)
-				.filter(Boolean) as Monster['color'][],
-			game?.config.grindstoneStreak ?? 5
-		);
 	}
 
 	function draw(now: number) {
 		if (!canvas || !game) return;
 		const rect = canvas.getBoundingClientRect();
-		const dpr = Math.min(window.devicePixelRatio || 1, 2);
+		// Retina backing buffers multiply every canvas pass; keep the pixel-art arena within budget.
+		const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
 		if (
 			canvas.width !== Math.floor(rect.width * dpr) ||
 			canvas.height !== Math.floor(rect.height * dpr)
@@ -1088,7 +1224,16 @@
 		const playing = mode !== 'title';
 		context.setTransform(dpr, 0, 0, dpr, 0, 0);
 		renderer.draw(context, {
-			game,
+			game:
+				isDragging && me
+					? {
+							...game,
+							players: {
+								...game.players,
+								[humanId]: { ...me, chain: visibleChain, chainTargetId: visibleTargetId ?? null }
+							}
+						}
+					: game,
 			humanId: playing ? humanId : '',
 			now,
 			width: rect.width,
@@ -1103,7 +1248,7 @@
 						? 'HOLD + DRAG FROM HERO'
 						: 'DRAG FROM YOUR HERO'
 					: null,
-			aim: playing && isAiming ? { target: pointerWorld, power } : null,
+			aim: playing && isAiming ? { target: pointerWorld, power, damage } : null,
 			chainPreview: playing ? chainPreview() : null,
 			spectating: !playing
 		});
@@ -1138,7 +1283,7 @@
 				if (!game) startAttract();
 				attractAccumulator += elapsed;
 				while (game && attractAccumulator >= 50) {
-					const result = stepGame($state.snapshot(game), attractBots.update(game), 50);
+					const result = stepGame(game, attractBots.update(game), 50);
 					game = result.state;
 					for (const event of result.events) renderer.handleEvent(event, game, '');
 					for (const event of result.events) {
@@ -1168,7 +1313,7 @@
 					if (mode === 'arena') intents.push(...(botController.update?.(game) ?? []));
 					if (
 						mode === 'tutorial' &&
-						tutorialStep === 5 &&
+						tutorialStep === 4 &&
 						tutorialShotAt &&
 						game.timeMs >= tutorialShotAt
 					) {
@@ -1185,17 +1330,13 @@
 						});
 						tutorialShotAt = game.timeMs + 2100;
 					}
-					const result = stepGame($state.snapshot(game), intents, 50);
+					const result = stepGame(game, intents, 50);
 					game = result.state;
 					for (const event of result.events) addEvent(event);
 					if (lobbyRole === 'host') pendingNetworkEvents.push(...result.events);
 					if (commitAfterTick) {
-						queuedIntents.push({
-							type: 'chain-commit',
-							playerId: humanId,
-							conversion: commitAfterTick
-						});
-						commitAfterTick = null;
+						queuedIntents.push({ type: 'chain-commit', playerId: humanId });
+						commitAfterTick = false;
 					}
 					if (mode === 'tutorial' && tutorialStep === 0 && game.players.human!.chain.length >= 3)
 						tutorialStep = 1;
@@ -1226,7 +1367,7 @@
 	<title>Grindion — Chain. Power. Survive.</title>
 	<meta
 		name="description"
-		content="A pixel-art multiplayer puzzle brawler. Chain monsters, bank Score or forge Power, and spend everything on one shot."
+		content="A pixel-art multiplayer puzzle brawler. Chain monsters to score and charge Power, then bank it for shots."
 	/>
 </svelte:head>
 
@@ -1281,7 +1422,7 @@
 						fetchpriority="high"
 					/>
 					<h1 class="visually-hidden">GRINDION</h1>
-					<p class="tagline">Chain monsters. Choose your payoff. <em>Spend everything.</em></p>
+					<p class="tagline">Chain monsters. Charge up. <em>Spend everything.</em></p>
 				</header>
 
 				<section class="play-card panel" aria-label="Play">
@@ -1385,6 +1526,8 @@
 						</li>
 					{/each}
 				</ol>
+
+				<TrailerSection />
 			</div>
 		</div>
 	{:else}
@@ -1440,11 +1583,12 @@
 				</div>
 				<h2>{TUTORIAL_STEPS[tutorialStep].title}</h2>
 				<p>{tutorialStepCopy()}</p>
-				{#if tutorialStep === 2}<button class="btn primary" onclick={continueAfterGrowthLesson}
-						>BUILD POWER →</button
+				{#if tutorialStep === 2}<button class="btn primary" onclick={continueAfterScoreLesson}
+						>TAKE AIM →</button
 					>{/if}
-				{#if tutorialStep === 6}<button class="btn primary" onclick={() => startArena()}
-						>ENTER LIVE ARENA →</button
+				{#if tutorialStep === TUTORIAL_STEPS.length - 1}<button
+						class="btn primary"
+						onclick={() => startArena()}>ENTER LIVE ARENA →</button
 					>{/if}
 			</section>
 		{/if}
@@ -1484,7 +1628,7 @@
 
 		{#if mode === 'arena' || tutorialStep > 0}
 			<div class:tutorial-hud={mode === 'tutorial'} class="player-hud panel">
-				{#if mode === 'arena' || tutorialStep >= 5}
+				{#if mode === 'arena' || tutorialStep >= 4}
 					<div
 						class="heart-hud"
 						class:low={health / Math.max(1, maxHealth) < 0.35}
@@ -1498,65 +1642,96 @@
 						>
 					</div>
 				{/if}
-				{#if mode === 'arena' || tutorialStep >= 1}
-					<div class="score-card">
-						<span class="label">SCORE</span><strong>{score}</strong>
-						{#if mode === 'tutorial' && tutorialStep === 2}<small>NO PATH LIMIT</small>{/if}
+				{#if mode === 'arena' || tutorialStep >= 2}
+					<div
+						class="score-card"
+						class:lesson={mode === 'tutorial' && tutorialStep === 2}
+						aria-label={`Score ${score}, ${heroForm.name}`}
+					>
+						<div class="score-identity">
+							<span
+								class="hero-portrait"
+								role="img"
+								aria-label={heroForm.name}
+								style:background-image={`url("${HERO_FORM_SHEET}")`}
+								style:background-position={`${heroForm.column * 100}% ${heroForm.row * 100}%`}
+							></span>
+							<strong>{score}</strong>
+						</div>
+						<span class="label">SCORE</span>
+						<span class="form-info"
+							>{heroForm.name}<span class="next-form">
+								· {nextHeroForm ? `NEXT FORM AT ${nextHeroForm.minScore}` : 'FINAL FORM'}</span
+							></span
+						>
+						<i class="meter"><em style:width={`${Math.min(100, formProgress)}%`}></em></i>
 					</div>
 				{/if}
-				{#if mode === 'arena' || tutorialStep >= 3}
-					<div class="power-card" class:armed={power >= minFirePower}>
-						<span class="label">{isAiming ? 'ARMED · ALL IN' : 'POWER'}</span><strong
+				{#if mode === 'arena' || tutorialStep >= 1}
+					<div class="power-card" class:armed={power >= shotCost}>
+						<span class="label">{isAiming ? `ARMED · ${shotCost} PER SHOT` : 'POWER'}</span><strong
 							>{Math.floor(power)}</strong
 						>
-						<i class="meter"
-							><em style:width={`${Math.min(100, (power / powerCap) * 100)}%`}></em><b
-								style:left={`${(minFirePower / powerCap) * 100}%`}
-							></b></i
-						>
+						<small>{shotsBanked} {shotsBanked === 1 ? 'SHOT' : 'SHOTS'}</small>
+						<i class="meter"><em style:width={`${((power % shotCost) / shotCost) * 100}%`}></em></i>
 					</div>
 				{/if}
 			</div>
 		{/if}
 
 		{#if mode === 'tutorial' && tutorialStep === 2}
-			<div class="callout">ADJACENT PATHS · UNLIMITED DISTANCE</div>
+			<div class="callout">
+				EVERY MONSTER = +1 SCORE · +{POWER_PER_MONSTER} POWER
+			</div>
 		{/if}
-		{#if isAiming}
-			<div class="callout aim">RELEASE TO FIRE ALL {Math.floor(power)} POWER</div>
+		{#if incomingStrike}
+			<div class="callout strike-warning" role="status">
+				STRIKE INCOMING · {me?.chain.length
+					? useTouchControls
+						? 'RELEASE, THEN PARRY'
+						: 'CANCEL + PARRY'
+					: power >= (game?.config.parryMinimum ?? 5)
+						? 'PARRY OR CHAIN AWAY'
+						: 'CHAIN AWAY'}
+			</div>
+		{:else if isStriking}
+			<div class="callout strike-warning" role="status">STRIKE COMMITTED · −{shotCost} POWER</div>
+		{:else if isAiming}
+			<div class="callout aim">RELEASE TO FIRE · −{shotCost} POWER · {damage} DMG</div>
 		{:else if chainLength > 0}
-			<div class="chain-status" class:grindstone={grindstoneReady}>
+			<div class="chain-status" class:grindstone={grindstoneReady} class:charged={chainCanCommit}>
 				<span>{chainLength}×</span>
 				<div>
-					{#if grindstoneReady}
+					{#if visibleTargetId}
+						<strong>RELEASE TO STRIKE · {damage} DMG</strong><small
+							>{shotCost} POWER · TARGET CAN PARRY OR ESCAPE</small
+						>
+					{:else if grindstoneReady}
 						<strong>GRINDSTONE READY</strong><small>NEXT MONSTER MAY BE ANY COLOR</small>
 					{:else if mode === 'tutorial' && tutorialStep === 0}
 						<strong>KEEP DRAGGING</strong><small>CONNECT THE HIGHLIGHTED ROUTE</small>
-					{:else if mode === 'tutorial' && tutorialStep === 1}
-						<strong>RELEASE TO {dragConversion === 'power' ? 'STORE POWER' : 'BANK SCORE'}</strong
-						><small
-							>{dragConversion === 'power'
-								? 'RIGHT-DRAG CONVERTS THE ROUTE TO POWER'
-								: 'YOU LAND ON THE LAST CREATURE'}</small
+					{:else if !chainCanCommit}
+						<strong>KEEP CHAINING</strong><small
+							>{game?.config.minChain ?? MIN_CHAIN} MONSTERS TO CHARGE</small
 						>
-					{:else if mode === 'tutorial' && tutorialStep === 3 && useTouchControls}
-						<strong>POWER MODE SELECTED</strong><small>RELEASE TO FORGE POWER</small>
-					{:else if mode === 'tutorial' && tutorialStep === 3}
-						<strong>RIGHT-DRAG + RELEASE</strong><small>STORE THIS CHAIN AS POWER</small>
-					{:else if useTouchControls}
-						<strong>RELEASE: {mobileConversion === 'power' ? 'FORGE POWER' : 'BANK SCORE'}</strong
-						><small>CHOOSE MODE BEFORE STARTING A CHAIN</small>
-					{:else if isDragging}
-						<strong>RELEASE: {dragConversion === 'power' ? 'STORE POWER' : 'BANK SCORE'}</strong
-						><small>LMB SCORES · RMB STORES POWER</small>
 					{:else}
-						<strong>5 / ENTER BANKS · + / F STORES</strong><small>0 OR ESC CANCELS</small>
+						<strong
+							>{isDragging || useTouchControls ? 'RELEASE' : '5 / ENTER'} · {chainPowerLabel}</strong
+						><small
+							>+{chainPoints} SCORE · {isDragging || useTouchControls
+								? 'YOU LAND ON THE LAST CREATURE'
+								: '0 OR ESC CANCELS'}</small
+						>
 					{/if}
 				</div>
 			</div>
 		{/if}
 
-		<div class="event-feed" aria-live="polite">
+		<div
+			class="event-feed"
+			class:under-threat={isStriking || Boolean(incomingStrike)}
+			aria-live="polite"
+		>
 			{#each eventFeed as event (event.id)}<div class={`feed-item tone-${event.tone}`}>
 					{event.text}
 				</div>{/each}
@@ -1564,8 +1739,7 @@
 
 		{#if !useTouchControls && mode === 'arena'}
 			<div class="hint-strip" aria-hidden="true">
-				<span>{@render keycap('LMB')} drag hero · Score</span>
-				<span>{@render keycap('RMB')} drag hero · Power</span>
+				<span>{@render keycap('LMB')} drag hero · Charge</span>
 				<span>{@render keycap('RMB')} hold · Aim</span>
 				<span>{@render keycap('SPACE')} Parry</span>
 				<span>{@render keycap('?')} Controls</span>
@@ -1600,9 +1774,7 @@
 								<dt>Hold hero + drag</dt>
 								<dd>Build a route</dd>
 								<dt>Release</dt>
-								<dd>Commit as the selected reward</dd>
-								<dt>Bank / Forge</dt>
-								<dd>Pick Score or Power before chaining</dd>
+								<dd>Move and charge Power</dd>
 								<dt>Aim + Fire</dt>
 								<dd>Drag to aim, release to fire all Power</dd>
 								<dt>Parry</dt>
@@ -1614,12 +1786,10 @@
 							<h3>Mouse</h3>
 							<dl class="binds">
 								<dt>{@render keycap('LMB')} drag from hero</dt>
-								<dd>Route, release banks Score</dd>
-								<dt>{@render keycap('RMB')} drag from hero</dt>
-								<dd>Route, release stores Power</dd>
+								<dd>Route, release moves and charges Power</dd>
 								<dt>Drag back</dt>
 								<dd>Shorten the route</dd>
-								<dt>{@render keycap('RMB')} hold off hero</dt>
+								<dt>{@render keycap('RMB')} hold</dt>
 								<dd>Aim and scout</dd>
 								<dt>Release aim</dt>
 								<dd>Fire every point of Power</dd>
@@ -1631,16 +1801,14 @@
 							<h3>Keyboard</h3>
 							<div class="numpad" aria-label="Numpad directions">
 								{#each ['7', '8', '9', '4', '5', '6', '1', '2', '3'] as key (key)}
-									<kbd class:bank={key === '5'}>{key}</kbd>
+									<kbd class:commit={key === '5'}>{key}</kbd>
 								{/each}
 							</div>
 							<dl class="binds">
 								<dt>{@render keycap('QWE')} {@render keycap('AD')} {@render keycap('ZXC')}</dt>
 								<dd>Laptop directions</dd>
 								<dt>{@render keycap('5')} {@render keycap('S')} {@render keycap('ENTER')}</dt>
-								<dd>Bank Score</dd>
-								<dt>{@render keycap('+')} {@render keycap('F')}</dt>
-								<dd>Store Power</dd>
+								<dd>Commit the chain and charge Power</dd>
 								<dt>{@render keycap('0')} {@render keycap('ESC')}</dt>
 								<dd>Cancel the chain</dd>
 							</dl>
@@ -1648,8 +1816,10 @@
 					{/if}
 				</div>
 				<p class="risk-note">
-					<strong>Greed has a cost.</strong> While you chain you cannot shoot or parry. After you fire,
-					everyone can see you are empty.
+					<strong>Chain finishers.</strong> With {shotCost}+ Power already stored, chain at least {MIN_CHAIN}
+					monsters and finish on a neighboring opponent. Release to spend {shotCost} Power on a delayed
+					strike. They can parry or chain away. Direction keys select a player; another direction clears
+					the target. You cannot act during the strike windup.
 				</p>
 			</div>
 		{/if}
@@ -1663,7 +1833,9 @@
 						<div>
 							<span>SCORE LOST</span><strong class="danger">−{deathRecap?.scoreLost ?? 0}</strong>
 						</div>
-						<div><span>SCORE REMAINING</span><strong class="gold">{score}</strong></div>
+						<div>
+							<span>SCORE</span><strong class="gold">{score}</strong>
+						</div>
 						<div><span>POWER</span><strong class="energy">EMPTIED</strong></div>
 					</div>
 					<div class="respawn-status">
@@ -1730,30 +1902,22 @@
 
 		{#if useTouchControls && isRunning && !isDead}
 			<div class="mobile-controls" role="group" aria-label="Touch game controls">
-				{#if mode === 'arena' || tutorialStep === 3}
-					<div class="mobile-conversion" aria-label="Chain reward">
-						<button
-							class:active={mobileConversion === 'score'}
-							aria-pressed={mobileConversion === 'score'}
-							onclick={() => (mobileConversion = 'score')}>BANK SCORE</button
-						><button
-							class:active={mobileConversion === 'power'}
-							aria-pressed={mobileConversion === 'power'}
-							onclick={() => (mobileConversion = 'power')}>FORGE POWER</button
-						>
-					</div>
-				{/if}
 				<div class="mobile-actions">
-					{#if mode === 'arena' || tutorialStep === 4}
+					{#if mode === 'arena' || tutorialStep === 3}
 						<button
 							class="aim-control"
 							class:active={mobileAimArmed}
 							aria-pressed={mobileAimArmed}
+							disabled={isStriking}
 							onclick={toggleMobileAim}>{mobileAimArmed ? 'CANCEL AIM' : 'AIM + FIRE'}</button
 						>
 					{/if}
-					{#if mode === 'arena' || tutorialStep === 5}
-						<button class="parry-control" onclick={() => dispatch({ type: 'parry' })}>PARRY</button>
+					{#if mode === 'arena' || tutorialStep === 4}
+						<button
+							class="parry-control"
+							disabled={isStriking}
+							onclick={() => dispatch({ type: 'parry' })}>PARRY</button
+						>
 					{/if}
 				</div>
 			</div>
@@ -2332,6 +2496,11 @@
 		color: var(--gold);
 		font-variant-numeric: tabular-nums;
 	}
+	.leader-row strong small {
+		margin-right: 3px;
+		color: var(--muted);
+		font-size: 10px;
+	}
 	.leader-row.you {
 		background: rgba(255, 227, 110, 0.14);
 		box-shadow: inset 2px 0 0 var(--you);
@@ -2402,20 +2571,53 @@
 		background: var(--danger);
 		animation: pulse 0.8s ease-in-out infinite;
 	}
-	.score-card {
-		justify-items: center;
-		min-width: 110px;
+	.player-hud > .score-card {
+		grid-template-columns: auto 1fr;
+		column-gap: 10px;
+		row-gap: 4px;
+		min-width: 150px;
+	}
+	.score-identity {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.hero-portrait {
+		width: 32px;
+		height: 32px;
+		background-size: 200% 200%;
+		image-rendering: pixelated;
+	}
+	.form-info {
+		grid-column: 1 / -1;
+		color: var(--muted);
+		font: 600 10px var(--font-pixel);
+		text-transform: uppercase;
+		white-space: nowrap;
 	}
 	.score-card strong {
+		align-self: center;
+		min-width: 1ch;
 		color: var(--gold);
 		font: 700 34px/1 var(--font-pixel);
 		font-variant-numeric: tabular-nums;
+		text-align: center;
 		text-shadow: 0 2px 0 #7a3b12;
 	}
-	.score-card small {
-		color: var(--energy);
-		font: 600 10px var(--font-pixel);
-		letter-spacing: 0.08em;
+	.score-card .label {
+		align-self: center;
+		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
+	}
+	.score-card .meter {
+		grid-column: 1 / -1;
+		height: 6px;
+	}
+	.score-card .meter em {
+		background: var(--gold);
+	}
+	.score-card.lesson {
+		box-shadow: inset 0 0 0 2px var(--gold);
 	}
 	.power-card {
 		grid-template-columns: 1fr auto;
@@ -2425,15 +2627,14 @@
 		font: 700 20px/1 var(--font-pixel);
 		font-variant-numeric: tabular-nums;
 	}
+	.power-card small {
+		grid-column: 1 / -1;
+		color: var(--muted);
+		font: 600 10px var(--font-pixel);
+		letter-spacing: 0.08em;
+	}
 	.power-card .meter em {
 		background: #3d7f8a;
-	}
-	.power-card .meter b {
-		position: absolute;
-		top: -1px;
-		bottom: -1px;
-		width: 2px;
-		background: rgba(255, 255, 255, 0.5);
 	}
 	.power-card.armed strong {
 		color: var(--energy);
@@ -2452,6 +2653,12 @@
 		bottom: 104px;
 		transform: translateX(-50%);
 		pointer-events: none;
+	}
+	.callout.strike-warning {
+		color: var(--coral);
+		border-color: var(--coral);
+		white-space: normal;
+		text-align: center;
 	}
 	.callout {
 		padding: 9px 14px;
@@ -2478,6 +2685,12 @@
 			0 4px 0 rgba(0, 0, 0, 0.4);
 		animation: pop 160ms ease-out;
 	}
+	.chain-status.charged:not(.grindstone) {
+		box-shadow:
+			inset 0 -4px 0 rgba(0, 0, 0, 0.12),
+			0 4px 0 rgba(0, 0, 0, 0.4),
+			0 0 18px rgba(127, 243, 255, 0.45);
+	}
 	.chain-status.grindstone {
 		background: linear-gradient(90deg, #ffd2cf, #fff3b0, #c9f7df, #c4f1f5, #e8d5f7);
 	}
@@ -2499,6 +2712,13 @@
 		letter-spacing: 0.04em;
 	}
 
+	.event-feed.under-threat {
+		visibility: hidden;
+	}
+	.mobile-actions button:disabled {
+		opacity: 0.45;
+		cursor: default;
+	}
 	.event-feed {
 		position: absolute;
 		z-index: 5;
@@ -2701,7 +2921,7 @@
 		padding: 8px 0;
 		font-size: 14px;
 	}
-	.numpad kbd.bank {
+	.numpad kbd.commit {
 		color: #2a1600;
 		background: var(--gold);
 		border-color: #c78a1c;
@@ -2899,14 +3119,6 @@
 		padding: 24px 10px max(10px, env(safe-area-inset-bottom));
 		background: linear-gradient(transparent, rgba(7, 5, 15, 0.92) 35%);
 	}
-	.mobile-conversion {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		padding: 3px;
-		background: rgba(18, 12, 34, 0.9);
-		border: 2px solid var(--line);
-		border-radius: 8px;
-	}
 	.mobile-actions {
 		display: grid;
 		grid-auto-flow: column;
@@ -2924,15 +3136,6 @@
 		font: 700 14px var(--font-pixel);
 		letter-spacing: 0.05em;
 		touch-action: manipulation;
-	}
-	.mobile-conversion button.active {
-		color: #2a1600;
-		background: var(--gold);
-		box-shadow: inset 0 -3px 0 #c78a1c;
-	}
-	.mobile-conversion button:last-child.active {
-		background: var(--energy);
-		box-shadow: inset 0 -3px 0 #2a9aa8;
 	}
 	.mobile-actions button {
 		min-height: 56px;
@@ -3015,11 +3218,25 @@
 	.touch .player-hud > div {
 		padding: 8px 10px;
 	}
-	.touch .score-card {
-		min-width: 70px;
+	.touch .player-hud > .score-card {
+		min-width: 0;
+		column-gap: 6px;
+	}
+	.touch .form-info {
+		font-size: 9px;
+	}
+	.touch .next-form {
+		display: none;
+	}
+	.touch .hero-portrait {
+		width: 26px;
+		height: 26px;
 	}
 	.touch .score-card strong {
 		font-size: 26px;
+	}
+	.touch .score-card .label {
+		font-size: 10px;
 	}
 	.touch .heart-hud strong,
 	.touch .power-card strong {
@@ -3048,7 +3265,7 @@
 	}
 	.touch .player-hud.tutorial-hud {
 		top: auto;
-		bottom: 214px;
+		bottom: 170px;
 	}
 	.touch .tutorial-card h2 {
 		font-size: 19px;

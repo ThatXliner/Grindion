@@ -66,8 +66,10 @@ export function isGameIntent(value: unknown): value is GameIntent {
 		case 'chain-start':
 		case 'chain-extend':
 			return typeof value.monsterId === 'string';
+		case 'chain-target':
+			return value.targetId === null || typeof value.targetId === 'string';
 		case 'chain-commit':
-			return value.conversion === 'score' || value.conversion === 'power';
+			return !('conversion' in value);
 		case 'chain-cancel':
 		case 'parry':
 			return true;
@@ -92,7 +94,8 @@ export function isGameState(value: unknown): value is GameState {
 		typeof value.timeMs === 'number' &&
 		isObject(value.players) &&
 		isObject(value.arena) &&
-		isObject(value.projectiles)
+		isObject(value.projectiles) &&
+		isObject(value.chainStrikes)
 	);
 }
 
@@ -103,12 +106,23 @@ function isGameEvent(value: unknown): value is GameEvent {
 	switch (value.type) {
 		case 'chain-committed':
 			return (
-				(value.conversion === 'score' || value.conversion === 'power') &&
 				typeof value.length === 'number' &&
 				typeof value.value === 'number' &&
+				typeof value.powerGained === 'number' &&
+				typeof value.powerSpent === 'number' &&
+				typeof value.scoreBefore === 'number' &&
 				isObject(value.origin) &&
 				Array.isArray(value.monsterIds) &&
 				value.monsterIds.every((id) => typeof id === 'string')
+			);
+		case 'chain-strike-started':
+			return typeof value.targetId === 'string' && typeof value.strikeId === 'string';
+		case 'chain-strike-ended':
+			return (
+				typeof value.targetId === 'string' &&
+				typeof value.strikeId === 'string' &&
+				typeof value.cellId === 'string' &&
+				['hit', 'missed', 'parried', 'interrupted'].includes(String(value.outcome))
 			);
 		case 'chain-truncated':
 			return typeof value.length === 'number';

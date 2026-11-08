@@ -5,7 +5,7 @@ export interface Vec2 {
 	y: number;
 }
 export type MonsterColor = 'coral' | 'cyan' | 'gold';
-export type PlayerMode = 'neutral' | 'chaining' | 'parrying' | 'hit' | 'dead';
+export type PlayerMode = 'neutral' | 'chaining' | 'parrying' | 'hit' | 'dead' | 'striking';
 
 export interface GameConfig {
 	width: number;
@@ -24,12 +24,12 @@ export interface GameConfig {
 	grindstoneStreak: number;
 	baseHealth: number;
 	healthScale: number;
-	bankHealingPerValue: number;
-	powerHandicap: number;
-	powerPerValue: number;
-	powerCap: number;
+	chainHealingPerScore: number;
+	powerPerMonster: number;
 	initialPower: number;
-	minFirePower: number;
+	shotCost: number;
+	shotDamage: number;
+	chainStrikeWindupMs: number;
 	projectileSpeed: number;
 	projectileLifetimeMs: number;
 	parryMinimum: number;
@@ -69,6 +69,7 @@ export interface PlayerState {
 	reach: number;
 	power: number;
 	chain: EntityId[];
+	chainTargetId: EntityId | null;
 	mode: PlayerMode;
 	parryUntilMs: number;
 	parryCooldownUntilMs: number;
@@ -87,6 +88,17 @@ export interface Projectile {
 	power: number;
 	radius: number;
 	expiresAtMs: number;
+}
+
+export interface ChainStrike {
+	id: EntityId;
+	ownerId: EntityId;
+	targetId: EntityId;
+	cellId: EntityId;
+	originCellId: EntityId;
+	damage: number;
+	startedAtMs: number;
+	hitAtMs: number;
 }
 
 export interface PlayerSetup {
@@ -109,7 +121,8 @@ interface IntentBase {
 export type GameIntent =
 	| (IntentBase & { type: 'chain-start'; monsterId: EntityId })
 	| (IntentBase & { type: 'chain-extend'; monsterId: EntityId })
-	| (IntentBase & { type: 'chain-commit'; conversion: 'score' | 'power' })
+	| (IntentBase & { type: 'chain-target'; targetId: EntityId | null })
+	| (IntentBase & { type: 'chain-commit' })
 	| (IntentBase & { type: 'chain-cancel' })
 	| (IntentBase & { type: 'fire'; direction: Vec2 })
 	| (IntentBase & { type: 'parry' });
@@ -118,11 +131,22 @@ export type GameEvent =
 	| {
 			type: 'chain-committed';
 			playerId: string;
-			conversion: 'score' | 'power';
 			length: number;
 			value: number;
+			powerGained: number;
+			powerSpent: number;
+			scoreBefore: number;
 			origin: Vec2;
 			monsterIds: string[];
+	  }
+	| { type: 'chain-strike-started'; playerId: string; targetId: string; strikeId: string }
+	| {
+			type: 'chain-strike-ended';
+			playerId: string;
+			targetId: string;
+			strikeId: string;
+			cellId: string;
+			outcome: 'hit' | 'missed' | 'parried' | 'interrupted';
 	  }
 	| { type: 'chain-truncated'; playerId: string; length: number }
 	| { type: 'projectile-fired'; playerId: string; projectileId: string; power: number }
@@ -144,6 +168,7 @@ export interface GameState {
 	arena: Arena;
 	players: Record<EntityId, PlayerState>;
 	projectiles: Record<EntityId, Projectile>;
+	chainStrikes: Record<EntityId, ChainStrike>;
 }
 export interface StepResult {
 	state: GameState;

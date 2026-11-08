@@ -17,12 +17,12 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = Object.freeze({
 	grindstoneStreak: 5,
 	baseHealth: 100,
 	healthScale: 35,
-	bankHealingPerValue: 0.35,
-	powerHandicap: 0.5,
-	powerPerValue: 5,
-	powerCap: 120,
+	chainHealingPerScore: 0.35,
+	powerPerMonster: 5,
 	initialPower: 15,
-	minFirePower: 10,
+	shotCost: 15,
+	shotDamage: 20,
+	chainStrikeWindupMs: 600,
 	projectileSpeed: 520,
 	projectileLifetimeMs: 2_500,
 	parryMinimum: 5,
@@ -54,16 +54,10 @@ export function reachForScore(score: number, config: GameConfig = DEFAULT_CONFIG
 export function maxHealthForScore(score: number, config: GameConfig = DEFAULT_CONFIG): number {
 	return config.baseHealth + config.healthScale * growthForScore(score, config);
 }
-export function powerEfficiency(score: number, config: GameConfig = DEFAULT_CONFIG): number {
-	return 1 / (1 + config.powerHandicap * growthForScore(score, config));
+export function powerGain(length: number, config: GameConfig = DEFAULT_CONFIG): number {
+	return Math.max(0, length) * config.powerPerMonster;
 }
-export function chainValue(length: number): number {
-	return length < 1 ? 0 : Math.round(length * (1 + 0.1 * Math.max(0, length - 3)));
-}
-export function powerGain(
-	length: number,
-	score: number,
-	config: GameConfig = DEFAULT_CONFIG
-): number {
-	return Math.round(config.powerPerValue * chainValue(length) * powerEfficiency(score, config));
+/** Every monster in a committed chain is worth one point. */
+export function chainScore(length: number, config: GameConfig = DEFAULT_CONFIG): number {
+	return length < config.minChain ? 0 : length;
 }

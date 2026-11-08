@@ -1,7 +1,9 @@
 import { createArena, distance, normalize } from './arena';
+import { canChainStrikeTarget } from './chainAttack';
+import { createChainMotionTiming } from './chainMotion';
 import { canExtendWithColor } from './chainRules';
 import { randomFrom } from './prng';
-import { chainValue, maxHealthForScore, powerGain, reachForScore } from './tuning';
+import { chainScore, maxHealthForScore, powerGain, reachForScore } from './tuning';
 import { DEFAULT_CONFIG } from './tuning';
 import type {
 	CreateGameOptions,
@@ -55,6 +57,7 @@ function makePlayer(
 		reach: reachForScore(0, config),
 		power: config.initialPower,
 		chain: [],
+		chainTargetId: null,
 		mode: 'neutral',
 		parryUntilMs: 0,
 		parryCooldownUntilMs: 0,
@@ -118,7 +121,8 @@ export function createGame(options: CreateGameOptions = {}): GameState {
 		config,
 		arena: arenaResult.arena,
 		players,
-		projectiles: {}
+		projectiles: {},
+		chainStrikes: {}
 	};
 	Object.values(players).forEach((player, index) =>
 		placePlayerOnSpawnCell(player, index, setups.length, state)
@@ -133,12 +137,17 @@ function cloneState(state: GameState): GameState {
 function intentOrder(intent: GameIntent): number {
 	// Path edits arrive continuously between fixed ticks and must exist before a
 	// release/commit in that same tick. Actions then use their authoritative priority.
-	if (intent.type === 'chain-start' || intent.type === 'chain-extend') return 0;
-	if (intent.type === 'parry') return 1;
-	if (intent.type === 'chain-cancel') return 2;
-	if (intent.type === 'chain-commit') return 3;
-	if (intent.type === 'fire') return 4;
-	return 5;
+	if (
+		intent.type === 'chain-start' ||
+		intent.type === 'chain-extend' ||
+		intent.type === 'chain-target'
+	)
+		return 0;
+	if (intent.type === 'parry') return 2;
+	if (intent.type === 'chain-cancel') return 3;
+	if (intent.type === 'chain-commit') return 4;
+	if (intent.type === 'fire') return 5;
+	return 6;
 }
 
 function sortedIntents(intents: GameIntent[]): GameIntent[] {
@@ -154,10 +163,11 @@ function sortedIntents(intents: GameIntent[]): GameIntent[] {
 }
 
 function canAct(player: PlayerState): boolean {
-	return player.mode !== 'dead' && player.mode !== 'hit';
+	return player.mode !== 'dead' && player.mode !== 'hit' && player.mode !== 'striking';
 }
 function cancelChain(player: PlayerState): void {
 	player.chain = [];
+	player.chainTargetId = null;
 	if (player.mode === 'chaining') player.mode = 'neutral';
 }
 
@@ -181,6 +191,7 @@ function tryAddMonster(
 	const existingIndex = player.chain.indexOf(monsterId);
 	if (existingIndex >= 0) {
 		player.chain = player.chain.slice(0, existingIndex + 1);
+		player.chainTargetId = null;
 		return;
 	}
 	const previous = state.arena.monsters[player.chain[player.chain.length - 1]!];
@@ -192,30 +203,30 @@ function tryAddMonster(
 	)
 		return;
 	player.chain.push(monsterId);
+	player.chainTargetId = null;
 }
 
 function truncateUnavailable(state: GameState, player: PlayerState): boolean {
 	const validLength = player.chain.findIndex((id) => !state.arena.monsters[id]?.alive);
 	if (validLength < 0) return false;
 	player.chain = player.chain.slice(0, validLength);
+	player.chainTargetId = null;
 	if (!player.chain.length) player.mode = 'neutral';
 	return true;
 }
 
-function commitChain(
-	state: GameState,
-	player: PlayerState,
-	conversion: 'score' | 'power',
-	events: GameEvent[]
-): void {
+function commitChain(state: GameState, player: PlayerState, events: GameEvent[]): void {
+	if (!canAct(player)) return;
 	truncateUnavailable(state, player);
 	if (player.chain.length < state.config.minChain) {
 		cancelChain(player);
 		return;
 	}
+	const target = state.players[player.chainTargetId ?? ''];
+	const attackTarget = target && canChainStrikeTarget(state, player, target) ? target : null;
 	const ids = [...player.chain],
 		length = ids.length,
-		value = chainValue(length),
+		value = chainScore(length, state.config),
 		origin = { ...player.position },
 		destination = { ...state.arena.monsters[ids[length - 1]!]!.position };
 	for (const id of ids) {
@@ -223,20 +234,17 @@ function commitChain(
 		monster.alive = false;
 		monster.respawnAtMs = state.timeMs + state.config.monsterRefillMs;
 	}
-	if (conversion === 'score') {
-		player.score += value;
-		player.maxHealth = maxHealthForScore(player.score, state.config);
-		player.reach = reachForScore(player.score, state.config);
-		player.health = Math.min(
-			player.maxHealth,
-			player.health + value * state.config.bankHealingPerValue
-		);
-	} else {
-		player.power = Math.min(
-			state.config.powerCap,
-			player.power + powerGain(length, player.score, state.config)
-		);
-	}
+	const scoreBefore = player.score;
+	const powerGained = powerGain(length, state.config);
+	const powerSpent = attackTarget ? state.config.shotCost : 0;
+	player.score += value;
+	player.maxHealth = maxHealthForScore(player.score, state.config);
+	player.reach = reachForScore(player.score, state.config);
+	player.health = Math.min(
+		player.maxHealth,
+		player.health + value * state.config.chainHealingPerScore
+	);
+	player.power += powerGained - powerSpent;
 	// Committing the route is the player's only locomotion. The server resolves
 	// the chain atomically and places the player on its final cell.
 	player.position = destination;
@@ -245,12 +253,35 @@ function commitChain(
 	events.push({
 		type: 'chain-committed',
 		playerId: player.id,
-		conversion,
 		length,
 		value,
+		powerGained,
+		powerSpent,
+		scoreBefore,
 		origin,
 		monsterIds: ids
 	});
+	if (attackTarget) {
+		const id = `c${state.nextProjectileId++}`;
+		player.mode = 'striking';
+		state.chainStrikes[id] = {
+			id,
+			ownerId: player.id,
+			targetId: attackTarget.id,
+			cellId: attackTarget.cellId,
+			originCellId: player.cellId,
+			damage: state.config.shotDamage,
+			startedAtMs: state.timeMs,
+			hitAtMs:
+				state.timeMs + createChainMotionTiming(length).totalMs + state.config.chainStrikeWindupMs
+		};
+		events.push({
+			type: 'chain-strike-started',
+			playerId: player.id,
+			targetId: attackTarget.id,
+			strikeId: id
+		});
+	}
 	for (const opponent of Object.values(state.players)) {
 		if (opponent.id !== player.id && truncateUnavailable(state, opponent)) {
 			events.push({
@@ -277,11 +308,11 @@ function beginParry(state: GameState, player: PlayerState): void {
 }
 
 function fire(state: GameState, player: PlayerState, direction: Vec2, events: GameEvent[]): void {
-	if (!canAct(player) || player.chain.length || player.power < state.config.minFirePower) return;
+	if (!canAct(player) || player.chain.length || player.power < state.config.shotCost) return;
 	const aim = normalize(direction);
 	if (aim.x === 0 && aim.y === 0) return;
-	const power = player.power;
-	player.power = 0;
+	const power = state.config.shotDamage;
+	player.power -= state.config.shotCost;
 	player.protectedUntilMs = state.timeMs;
 	const id = `p${state.nextProjectileId++}`;
 	const radius = 6 + 0.75 * Math.sqrt(power);
@@ -310,11 +341,20 @@ function processIntent(state: GameState, intent: GameIntent, events: GameEvent[]
 		case 'chain-extend':
 			tryAddMonster(state, player, intent.monsterId, false);
 			break;
+		case 'chain-target': {
+			if (intent.targetId === null) {
+				player.chainTargetId = null;
+				break;
+			}
+			const target = state.players[intent.targetId];
+			if (target && canChainStrikeTarget(state, player, target)) player.chainTargetId = target.id;
+			break;
+		}
 		case 'chain-cancel':
 			cancelChain(player);
 			break;
 		case 'chain-commit':
-			commitChain(state, player, intent.conversion, events);
+			commitChain(state, player, events);
 			break;
 		case 'parry':
 			beginParry(state, player);
@@ -369,6 +409,65 @@ function killPlayer(
 	});
 }
 
+function damagePlayer(
+	state: GameState,
+	target: PlayerState,
+	ownerId: string,
+	damage: number,
+	events: GameEvent[]
+): void {
+	cancelChain(target);
+	target.health = Math.max(0, target.health - damage);
+	events.push({
+		type: 'player-damaged',
+		playerId: target.id,
+		byPlayerId: ownerId,
+		damage: damage
+	});
+	if (target.health <= 0) killPlayer(state, target, ownerId, events);
+	else {
+		target.mode = 'hit';
+		target.hitUntilMs = state.timeMs + state.config.hitStunMs;
+	}
+}
+
+function updateChainStrikes(state: GameState, events: GameEvent[]): void {
+	for (const strike of Object.values(state.chainStrikes).sort((a, b) => a.id.localeCompare(b.id))) {
+		const owner = state.players[strike.ownerId];
+		const target = state.players[strike.targetId];
+		let outcome: 'hit' | 'missed' | 'parried' | 'interrupted';
+		if (
+			state.timeMs >= state.roundEndsAtMs ||
+			!owner ||
+			owner.mode !== 'striking' ||
+			owner.cellId !== strike.originCellId
+		)
+			outcome = 'interrupted';
+		else if (!target || target.mode === 'dead') outcome = 'missed';
+		else if (state.timeMs < strike.hitAtMs) continue;
+		else if (target.cellId !== strike.cellId || state.timeMs < target.protectedUntilMs)
+			outcome = 'missed';
+		else if (target.mode === 'parrying' && state.timeMs <= target.parryUntilMs) outcome = 'parried';
+		else {
+			outcome = 'hit';
+			damagePlayer(state, target, strike.ownerId, strike.damage, events);
+		}
+		delete state.chainStrikes[strike.id];
+		if (owner?.mode === 'striking') {
+			owner.mode = outcome === 'parried' ? 'hit' : 'neutral';
+			if (outcome === 'parried') owner.hitUntilMs = state.timeMs + state.config.hitStunMs * 2;
+		}
+		events.push({
+			type: 'chain-strike-ended',
+			playerId: strike.ownerId,
+			targetId: strike.targetId,
+			strikeId: strike.id,
+			cellId: strike.cellId,
+			outcome
+		});
+	}
+}
+
 function updateProjectiles(state: GameState, dtSeconds: number, events: GameEvent[]): void {
 	for (const projectile of Object.values(state.projectiles).sort((a, b) =>
 		a.id.localeCompare(b.id)
@@ -403,19 +502,7 @@ function updateProjectiles(state: GameState, dtSeconds: number, events: GameEven
 			events.push({ type: 'projectile-parried', playerId: target.id, projectileId: projectile.id });
 			continue;
 		}
-		cancelChain(target);
-		target.health = Math.max(0, target.health - projectile.power);
-		events.push({
-			type: 'player-damaged',
-			playerId: target.id,
-			byPlayerId: projectile.ownerId,
-			damage: projectile.power
-		});
-		if (target.health <= 0) killPlayer(state, target, projectile.ownerId, events);
-		else {
-			target.mode = 'hit';
-			target.hitUntilMs = state.timeMs + state.config.hitStunMs;
-		}
+		damagePlayer(state, target, projectile.ownerId, projectile.power, events);
 	}
 }
 
@@ -457,6 +544,7 @@ export function stepGame(
 	updateModes(state);
 	for (const intent of sortedIntents(intents)) processIntent(state, intent, events);
 	updateProjectiles(state, dtMs / 1000, events);
+	updateChainStrikes(state, events);
 	updateRespawnsAndMonsters(state, events);
 	if (!state.roundEnded && state.timeMs >= state.roundEndsAtMs) {
 		state.roundEnded = true;
