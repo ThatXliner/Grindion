@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 
-	// ?v= busts caches whenever the film is replaced (v4: the hybrid trailer).
-	const VIDEO_SRC = '/assets/grindion-cinematic.mp4?v=4';
-	const POSTER_SRC = '/assets/grindion-cinematic-poster.jpg?v=4';
+	// ?v= busts caches whenever the film is replaced (v5: hybrid trailer with score-era gameplay).
+	const VIDEO_SRC = '/assets/grindion-cinematic.mp4?v=5';
+	const POSTER_SRC = '/assets/grindion-cinematic-poster.jpg?v=5';
 
 	// The video element (and its download) only exists after a deliberate click.
 	let playing = $state(false);
