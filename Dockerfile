@@ -1,18 +1,4 @@
 FROM node:22-bookworm-slim AS node-base
-# The patched Docker tags have empty OCI indexes. Use the official glibc tarball.
-ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
-    && rm -rf /var/lib/apt/lists/* \
-    && case "$TARGETARCH" in \
-         arm64) arch=arm64; sha=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b ;; \
-         amd64) arch=x64; sha=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce ;; \
-         *) exit 1 ;; \
-       esac \
-    && curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-$arch.tar.xz" \
-    && echo "$sha  /tmp/node.tar.xz" | sha256sum -c - \
-    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
-    && rm /tmp/node.tar.xz \
-    && test "$(node --version)" = v22.23.4
 
 FROM node-base AS build
 
