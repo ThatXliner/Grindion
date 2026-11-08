@@ -120,6 +120,7 @@ setInterval(() => {
 				type: 'snapshot',
 				code,
 				state: compactSnapshot(room.arena.state),
+				processedSequences: room.arena.processedSequences,
 				events: room.events
 			});
 			for (const socket of room.clients.keys()) sendRaw(socket, payload);

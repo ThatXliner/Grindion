@@ -9,6 +9,8 @@ export class ArenaRoom {
 	private bots = createBotController();
 	private intents: GameIntent[] = [];
 	private endedForMs = 0;
+	private receivedSequences: Record<string, number> = {};
+	processedSequences: Record<string, number> = {};
 
 	constructor(seed: number) {
 		this.state = createGame({
@@ -50,9 +52,14 @@ export class ArenaRoom {
 		player.chain = [];
 		if (player.mode === 'chaining') player.mode = 'neutral';
 		this.intents = this.intents.filter((intent) => intent.playerId !== id);
+		delete this.receivedSequences[id];
+		delete this.processedSequences[id];
 	}
 
 	queue(id: string, intent: GameIntent) {
+		if (this.state.players[id]?.isBot !== false) return;
+		if (Number.isSafeInteger(intent.sequence) && intent.sequence! >= 0)
+			this.receivedSequences[id] = Math.max(this.receivedSequences[id] ?? 0, intent.sequence!);
 		if (
 			this.state.players[id]?.isBot !== false ||
 			this.intents.filter((i) => i.playerId === id).length >= 32
@@ -73,12 +80,15 @@ export class ArenaRoom {
 			this.state = createGame({ seed: this.state.seed + 1, players, config: this.state.config });
 			this.bots.reset();
 			this.intents = [];
+			this.receivedSequences = {};
+			this.processedSequences = {};
 			this.endedForMs = 0;
 			return { events: [], restarted: true };
 		}
 		const result = stepGame(this.state, [...this.intents, ...this.bots.update(this.state)], 50);
 		this.intents = [];
 		this.state = result.state;
+		this.processedSequences = { ...this.receivedSequences };
 		return { events: result.events, restarted: false };
 	}
 

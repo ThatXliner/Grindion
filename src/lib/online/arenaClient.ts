@@ -4,11 +4,14 @@ import { expandSnapshot } from './snapshot';
 type Callbacks = {
 	onStart: (state: GameState, playerId: string, code: string) => void;
 	onSnapshot: (state: GameState, events: GameEvent[]) => void;
+	onInputProcessed?: (sequence: number) => void;
 	onDisconnect: (message: string) => void;
 };
 
 export class ArenaClient {
 	private closed = false;
+	private sequence = 0;
+	supportsPrediction = false;
 	private constructor(private socket: WebSocket) {}
 
 	static connect(name: string, code: string, callbacks: Callbacks): Promise<ArenaClient> {
@@ -21,6 +24,7 @@ export class ArenaClient {
 		return new Promise((resolve, reject) => {
 			let started = false;
 			let board: GameState['arena'] | null = null;
+			let playerId = '';
 			const timeout = setTimeout(() => {
 				client.disconnect();
 				reject(new Error('Arena connection timed out. Try again.'));
@@ -31,10 +35,15 @@ export class ArenaClient {
 					clearTimeout(timeout);
 					started = true;
 					board = value.state.arena;
+					playerId = value.playerId;
 					callbacks.onStart(value.state, value.playerId, value.code);
 					resolve(client);
-				} else if (value.type === 'snapshot' && board)
+				} else if (value.type === 'snapshot' && board) {
+					client.supportsPrediction = Boolean(value.processedSequences);
 					callbacks.onSnapshot(expandSnapshot(value.state, board), value.events ?? []);
+					const processed = value.processedSequences?.[playerId];
+					if (typeof processed === 'number') callbacks.onInputProcessed?.(processed);
+				}
 			};
 			socket.onclose = (event) => {
 				clearTimeout(timeout);
@@ -53,7 +62,10 @@ export class ArenaClient {
 	}
 
 	sendIntent(intent: GameIntent) {
-		if (this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(intent));
+		if (this.socket.readyState !== WebSocket.OPEN) return;
+		const sequence = ++this.sequence;
+		this.socket.send(JSON.stringify({ ...intent, sequence }));
+		return sequence;
 	}
 
 	disconnect() {

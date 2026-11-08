@@ -50,4 +50,15 @@ describe('server arena seats and lifecycle', () => {
 		expect(room.state.roundEnded).toBe(false);
 		expect(room.state.tick).toBe(0);
 	});
+	it('acknowledges input only after its tick, including actions rejected by the queue limit', () => {
+		const room = new ArenaRoom(14);
+		room.join('a', 'Alice');
+		for (let sequence = 1; sequence <= 33; sequence++)
+			room.queue('a', { type: 'chain-cancel', playerId: 'a', sequence });
+		expect(room.processedSequences.a).toBeUndefined();
+		room.tick();
+		expect(room.processedSequences.a).toBe(33);
+		room.leave('a');
+		expect(room.processedSequences.a).toBeUndefined();
+	});
 });
