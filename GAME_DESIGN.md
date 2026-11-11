@@ -156,9 +156,12 @@ power += 5 * chain length
 maxHealth = 100 + 35 * ln(1 + score / 100)
 ```
 
-Score also restores 0.35 health per point, up to maximum health. The legacy
+Score also restores 0.35 health per point, up to maximum health. Long chains
+restore a share of maximum health on top of that: 5% at six monsters, plus 5%
+for each further monster, capped at 50% from fifteen monsters. The legacy
 `reach` snapshot field retains its existing formula, but routes have no
-distance cap. Death removes 20% of score. A new round resets score. The
+distance cap. Death removes 20% of score. Knocking out a rival grants the
+killer 10 points. A new round resets score. The
 player with the highest score at round end wins.
 
 ### Character evolution
@@ -173,10 +176,12 @@ The four forms share the masked face, yellow eyes, blue hair, and red scarf:
 | 150–299 | Grindknight | Broad pauldrons, grindstone chest emblem, and knee guards |
 | 300+    | Grindion    | Full armor, stone wheel, and crimson cape                 |
 
-Evolution is purely visual. The score card shows the current form and the score
+Evolving into a higher form fully restores health, whether the score came from
+a chain or a knockout. Regaining a form after losing it on death counts. The
+score card shows the current form and the score
 needed for the next one. Losing score can lower the form, so the appearance
 always matches the current score. Forms are derived from the authoritative
-score and shared thresholds in `src/lib/render/heroForms.ts`.
+score and shared thresholds in `src/lib/game/heroForms.ts`.
 
 ## 8. Shooting
 

@@ -25,6 +25,10 @@ export interface GameConfig {
 	baseHealth: number;
 	healthScale: number;
 	chainHealingPerScore: number;
+	longChainLength: number;
+	longChainHealingPerMonster: number;
+	longChainHealingCap: number;
+	knockoutScore: number;
 	powerPerMonster: number;
 	initialPower: number;
 	shotCost: number;
@@ -152,7 +156,13 @@ export type GameEvent =
 	| { type: 'projectile-fired'; playerId: string; projectileId: string; power: number }
 	| { type: 'projectile-parried'; playerId: string; projectileId: string }
 	| { type: 'player-damaged'; playerId: string; byPlayerId: string; damage: number }
-	| { type: 'player-died'; playerId: string; byPlayerId: string; scoreLost: number }
+	| {
+			type: 'player-died';
+			playerId: string;
+			byPlayerId: string;
+			scoreLost: number;
+			knockoutScore: number;
+	  }
 	| { type: 'player-respawned'; playerId: string }
 	| { type: 'round-ended' };
 

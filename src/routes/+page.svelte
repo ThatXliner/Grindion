@@ -34,7 +34,7 @@
 		HERO_FORMS,
 		heroFormForScore,
 		nextHeroFormForScore
-	} from '$lib/render/heroForms';
+	} from '$lib/game/heroForms';
 	import TrailerSection from '$lib/components/TrailerSection.svelte';
 	import { getSupabaseBrowserClient, isSupabaseConfigured } from '$lib/supabase/client';
 	import {
@@ -709,6 +709,8 @@
 			const victim = event.playerId === humanId ? 'YOU' : game?.players[event.playerId]?.name;
 			const killer = event.byPlayerId === humanId ? 'YOU' : game?.players[event.byPlayerId]?.name;
 			text = `${killer ?? 'A RIVAL'} SHATTERED ${victim ?? 'A RIVAL'}`;
+			if (event.byPlayerId === humanId && event.knockoutScore)
+				text += ` · +${event.knockoutScore} SCORE`;
 			tone = 'coral';
 		} else if (event.type === 'chain-committed' && event.playerId === humanId && game) {
 			text = `+${event.powerGained} POWER · +${event.value} SCORE`;

@@ -133,7 +133,11 @@ function isGameEvent(value: unknown): value is GameEvent {
 		case 'player-damaged':
 			return typeof value.byPlayerId === 'string' && typeof value.damage === 'number';
 		case 'player-died':
-			return typeof value.byPlayerId === 'string' && typeof value.scoreLost === 'number';
+			return (
+				typeof value.byPlayerId === 'string' &&
+				typeof value.scoreLost === 'number' &&
+				typeof value.knockoutScore === 'number'
+			);
 		case 'player-respawned':
 			return true;
 		default:

@@ -119,6 +119,33 @@ describe('game engine', () => {
 		expect(cancelled.state.players.a!.score).toBe(0);
 	});
 
+	function commitRoute(state: GameState, length: number) {
+		const chain = Array.from({ length }, (_, index) => `m${index}`);
+		Object.assign(state.players.a!, { chain, mode: 'chaining' });
+		return stepGame(state, [{ type: 'chain-commit', playerId: 'a' }]).state.players.a!;
+	}
+
+	it('heals a share of max health for long chains, capped at half', () => {
+		const heal = (length: number) => {
+			const state = createGame({ seed: 7, players: [{ id: 'a' }] });
+			Object.assign(state.players.a!, { score: 60, health: 1 });
+			return commitRoute(state, length).health - 1;
+		};
+		const maxHealth = (gained: number) => maxHealthForScore(60 + gained);
+		expect(heal(5)).toBeCloseTo(5 * 0.35);
+		expect(heal(6)).toBeCloseTo(6 * 0.35 + 0.05 * maxHealth(6));
+		expect(heal(10)).toBeCloseTo(10 * 0.35 + 0.25 * maxHealth(10));
+		expect(heal(20)).toBeCloseTo(20 * 0.35 + 0.5 * maxHealth(20));
+	});
+
+	it('fully heals when a chain evolves the hero', () => {
+		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
+		Object.assign(state.players.a!, { score: 48, health: 5 });
+		const player = commitRoute(state, 3);
+		expect(player.score).toBe(51);
+		expect(player.health).toBe(player.maxHealth);
+	});
+
 	it('unlocks one color switch after five consecutive monsters', () => {
 		const state = createGame({ seed: 7, players: [{ id: 'a' }] });
 		const route = ['m0', 'm1', 'm2', 'm17', 'm32', 'm31', 'm30'];
@@ -332,10 +359,34 @@ describe('game engine', () => {
 			type: 'player-died',
 			playerId: 'b',
 			byPlayerId: 'a',
-			scoreLost: 20
+			scoreLost: 20,
+			knockoutScore: 10
 		});
+		expect(result.state.players.a!.score).toBe(410);
 		result = stepGame(result.state, [], 2_000);
 		expect(result.state.players.b!.mode).toBe('neutral');
 		expect(result.state.players.b!.protectedUntilMs).toBeGreaterThan(result.state.timeMs);
+	});
+
+	it('fully heals a knockout scorer whose bonus evolves the hero', () => {
+		const state = createGame({ players: [{ id: 'a' }, { id: 'b' }] });
+		Object.assign(state.players.a!, {
+			position: { x: 200, y: 200 },
+			power: 120,
+			score: 45,
+			health: 30
+		});
+		Object.assign(state.players.b!, {
+			position: { x: 260, y: 200 },
+			protectedUntilMs: 0,
+			health: 20
+		});
+		const result = stepGame(
+			state,
+			[{ type: 'fire', playerId: 'a', direction: { x: 1, y: 0 } }],
+			50
+		);
+		expect(result.state.players.a!.score).toBe(55);
+		expect(result.state.players.a!.health).toBe(result.state.players.a!.maxHealth);
 	});
 });

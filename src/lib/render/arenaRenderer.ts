@@ -15,7 +15,7 @@ import type {
 	PlayerState
 } from '$lib/game';
 import { Effects } from './effects';
-import { HERO_FORM_SHEET, heroFormForScore } from './heroForms';
+import { HERO_FORM_SHEET, heroFormForScore } from '$lib/game/heroForms';
 
 export type Point = { x: number; y: number };
 export type ChainAnimation = {
@@ -229,6 +229,11 @@ export class ArenaRenderer {
 			fx.burst(player.position, '#ffffff', 14, { speed: 240, life: 500 });
 			fx.ring(player.position, color, { from: 16, to: 120, life: 520, width: 8 });
 			if (event.byPlayerId === humanId) fx.float(player.position, 'SHATTERED', PALETTE.you);
+			const killer = at(event.byPlayerId);
+			if (killer && event.knockoutScore)
+				fx.float({ x: killer.x, y: killer.y - 26 }, `+${event.knockoutScore} KO`, PALETTE.gold, {
+					size: event.byPlayerId === humanId ? 1.2 : 0.8
+				});
 			if (event.playerId === humanId || event.byPlayerId === humanId) fx.kick(16);
 		} else if (event.type === 'player-respawned') {
 			const origin = at(event.playerId);

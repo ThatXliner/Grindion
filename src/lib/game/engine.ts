@@ -3,7 +3,14 @@ import { canChainStrikeTarget } from './chainAttack';
 import { createChainMotionTiming } from './chainMotion';
 import { canExtendWithColor } from './chainRules';
 import { randomFrom } from './prng';
-import { chainScore, maxHealthForScore, powerGain, reachForScore } from './tuning';
+import { heroFormForScore } from './heroForms';
+import {
+	chainScore,
+	longChainHealing,
+	maxHealthForScore,
+	powerGain,
+	reachForScore
+} from './tuning';
 import { DEFAULT_CONFIG } from './tuning';
 import type {
 	CreateGameOptions,
@@ -237,12 +244,12 @@ function commitChain(state: GameState, player: PlayerState, events: GameEvent[])
 	const scoreBefore = player.score;
 	const powerGained = powerGain(length, state.config);
 	const powerSpent = attackTarget ? state.config.shotCost : 0;
-	player.score += value;
-	player.maxHealth = maxHealthForScore(player.score, state.config);
-	player.reach = reachForScore(player.score, state.config);
+	gainScore(state, player, value);
 	player.health = Math.min(
 		player.maxHealth,
-		player.health + value * state.config.chainHealingPerScore
+		player.health +
+			value * state.config.chainHealingPerScore +
+			longChainHealing(length, state.config) * player.maxHealth
 	);
 	player.power += powerGained - powerSpent;
 	// Committing the route is the player's only locomotion. The server resolves
@@ -381,6 +388,16 @@ function segmentDistance(point: Vec2, start: Vec2, end: Vec2): number {
 	return distance(point, { x: start.x + t * dx, y: start.y + t * dy });
 }
 
+/** Evolving into a new hero form fully restores health. */
+function gainScore(state: GameState, player: PlayerState, amount: number): void {
+	const formBefore = heroFormForScore(player.score);
+	player.score += amount;
+	player.maxHealth = maxHealthForScore(player.score, state.config);
+	player.reach = reachForScore(player.score, state.config);
+	if (heroFormForScore(player.score).minScore > formBefore.minScore)
+		player.health = player.maxHealth;
+}
+
 function killPlayer(
 	state: GameState,
 	player: PlayerState,
@@ -400,12 +417,17 @@ function killPlayer(
 	cancelChain(player);
 	player.mode = 'dead';
 	const owner = state.players[ownerId];
-	if (owner) owner.kills++;
+	const knockoutScore = owner ? state.config.knockoutScore : 0;
+	if (owner) {
+		owner.kills++;
+		gainScore(state, owner, knockoutScore);
+	}
 	events.push({
 		type: 'player-died',
 		playerId: player.id,
 		byPlayerId: ownerId,
-		scoreLost: previousScore - player.score
+		scoreLost: previousScore - player.score,
+		knockoutScore
 	});
 }
 
