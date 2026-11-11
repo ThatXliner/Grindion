@@ -157,11 +157,13 @@ maxHealth = 100 + 35 * ln(1 + score / 100)
 ```
 
 Score also restores 0.35 health per point, up to maximum health. Long chains
-restore a share of maximum health on top of that: 5% at six monsters, plus 5%
-for each further monster, capped at 50% from fifteen monsters. The legacy
+restore a share of maximum health on top of that. Healing starts at ten
+monsters, the length that earns two Grindstone switches, with 5% of maximum
+health, plus 5% for each further monster, capped at 50% from nineteen
+monsters. The legacy
 `reach` snapshot field retains its existing formula, but routes have no
-distance cap. Death removes 20% of score. Knocking out a rival grants the
-killer 10 points. A new round resets score. The
+distance cap. Death removes 20% of score, and the killer takes all of it plus
+a flat 10 points. A new round resets score. The
 player with the highest score at round end wins.
 
 ### Character evolution

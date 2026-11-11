@@ -18,10 +18,9 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = Object.freeze({
 	baseHealth: 100,
 	healthScale: 35,
 	chainHealingPerScore: 0.35,
-	longChainLength: 6,
 	longChainHealingPerMonster: 0.05,
 	longChainHealingCap: 0.5,
-	knockoutScore: 10,
+	knockoutBonus: 10,
 	powerPerMonster: 5,
 	initialPower: 15,
 	shotCost: 15,
@@ -61,9 +60,12 @@ export function maxHealthForScore(score: number, config: GameConfig = DEFAULT_CO
 export function powerGain(length: number, config: GameConfig = DEFAULT_CONFIG): number {
 	return Math.max(0, length) * config.powerPerMonster;
 }
-/** Share of max health a chain restores on top of its per-point healing. */
+/**
+ * Share of max health a chain restores on top of its per-point healing,
+ * starting once the chain is long enough to earn two Grindstone switches.
+ */
 export function longChainHealing(length: number, config: GameConfig = DEFAULT_CONFIG): number {
-	const extra = length - config.longChainLength + 1;
+	const extra = length - 2 * config.grindstoneStreak + 1;
 	return Math.min(
 		config.longChainHealingCap,
 		Math.max(0, extra) * config.longChainHealingPerMonster

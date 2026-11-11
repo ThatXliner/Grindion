@@ -132,10 +132,10 @@ describe('game engine', () => {
 			return commitRoute(state, length).health - 1;
 		};
 		const maxHealth = (gained: number) => maxHealthForScore(60 + gained);
-		expect(heal(5)).toBeCloseTo(5 * 0.35);
-		expect(heal(6)).toBeCloseTo(6 * 0.35 + 0.05 * maxHealth(6));
-		expect(heal(10)).toBeCloseTo(10 * 0.35 + 0.25 * maxHealth(10));
-		expect(heal(20)).toBeCloseTo(20 * 0.35 + 0.5 * maxHealth(20));
+		expect(heal(9)).toBeCloseTo(9 * 0.35);
+		expect(heal(10)).toBeCloseTo(10 * 0.35 + 0.05 * maxHealth(10));
+		expect(heal(14)).toBeCloseTo(14 * 0.35 + 0.25 * maxHealth(14));
+		expect(heal(19)).toBeCloseTo(19 * 0.35 + 0.5 * maxHealth(19));
 	});
 
 	it('fully heals when a chain evolves the hero', () => {
@@ -360,9 +360,9 @@ describe('game engine', () => {
 			playerId: 'b',
 			byPlayerId: 'a',
 			scoreLost: 20,
-			knockoutScore: 10
+			knockoutScore: 30
 		});
-		expect(result.state.players.a!.score).toBe(410);
+		expect(result.state.players.a!.score).toBe(430);
 		result = stepGame(result.state, [], 2_000);
 		expect(result.state.players.b!.mode).toBe('neutral');
 		expect(result.state.players.b!.protectedUntilMs).toBeGreaterThan(result.state.timeMs);
@@ -387,6 +387,7 @@ describe('game engine', () => {
 			50
 		);
 		expect(result.state.players.a!.score).toBe(55);
+		expect(result.state.players.b!.score).toBe(0);
 		expect(result.state.players.a!.health).toBe(result.state.players.a!.maxHealth);
 	});
 });

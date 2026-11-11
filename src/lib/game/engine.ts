@@ -417,7 +417,9 @@ function killPlayer(
 	cancelChain(player);
 	player.mode = 'dead';
 	const owner = state.players[ownerId];
-	const knockoutScore = owner ? state.config.knockoutScore : 0;
+	// The killer takes everything the victim lost, plus a flat bonus.
+	const scoreLost = previousScore - player.score;
+	const knockoutScore = owner ? state.config.knockoutBonus + scoreLost : 0;
 	if (owner) {
 		owner.kills++;
 		gainScore(state, owner, knockoutScore);
@@ -426,7 +428,7 @@ function killPlayer(
 		type: 'player-died',
 		playerId: player.id,
 		byPlayerId: ownerId,
-		scoreLost: previousScore - player.score,
+		scoreLost,
 		knockoutScore
 	});
 }

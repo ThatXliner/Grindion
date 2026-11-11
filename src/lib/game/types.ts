@@ -25,10 +25,9 @@ export interface GameConfig {
 	baseHealth: number;
 	healthScale: number;
 	chainHealingPerScore: number;
-	longChainLength: number;
 	longChainHealingPerMonster: number;
 	longChainHealingCap: number;
-	knockoutScore: number;
+	knockoutBonus: number;
 	powerPerMonster: number;
 	initialPower: number;
 	shotCost: number;
