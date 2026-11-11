@@ -62,7 +62,8 @@ test('starts a live arena and spends one shot of Power', async ({ page }) => {
 
 	await page.getByRole('button', { name: /SOLO ARENA/ }).click();
 	await expect(page.getByText('SIMULATION LIVE')).toBeVisible();
-	await expect(page.getByText('8 ACTIVE')).toBeVisible();
+	await expect(page.getByText('1 ACTIVE')).toBeVisible();
+	await expect(page.locator('.leader-row').filter({ hasText: 'Bot' })).toHaveCount(0);
 	await page.keyboard.press('?');
 	const help = page.getByRole('dialog', { name: 'Controls and rules' });
 	await expect(help.getByText('Chain 5 of one color to unlock one rainbow switch')).toBeVisible();

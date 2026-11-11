@@ -23,6 +23,7 @@
 	import {
 		animatedPlayerPosition,
 		ArenaRenderer,
+		incomingThreat,
 		PALETTE,
 		playerColor,
 		SPRITE,
@@ -87,7 +88,7 @@
 		},
 		{
 			title: 'Parry',
-			copy: 'The dummy is firing. Press Space when the warning ring turns cyan.',
+			copy: 'The dummy is firing. Press Space or right click when the warning ring turns cyan.',
 			mobileCopy: 'The dummy is firing. Tap Parry when the warning ring turns cyan.'
 		},
 		{
@@ -364,11 +365,12 @@
 		camera = { x: game.arena.width / 2, y: game.arena.height / 2, scale: camera.scale };
 	}
 
-	function startArena(roundDurationMs?: number) {
+	/** Solo is practice alone; the online arena is where bots fill the seats. */
+	function startSoloArena(roundDurationMs?: number) {
 		lobbyRole = null;
 		game = createGame({
 			seed: Math.floor(Math.random() * 2 ** 30),
-			botCount: 7,
+			botCount: 0,
 			config: roundDurationMs ? { ...LIVE_ARENA_CONFIG, roundDurationMs } : LIVE_ARENA_CONFIG
 		});
 		humanId = Object.values(game.players).find((player) => !player.isBot)?.id ?? 'player';
@@ -930,7 +932,14 @@
 	}
 
 	function onPointerDown(event: PointerEvent) {
-		if (mode === 'title' || isDead || isStriking || chainAnimations.has(humanId)) return;
+		if (mode === 'title' || isDead) return;
+		// While the warning ring is up, right click parries instead of aiming.
+		if (event.button === 2 && game && incomingThreat(game, humanId)) {
+			event.preventDefault();
+			dispatch({ type: 'parry' });
+			return;
+		}
+		if (isStriking || chainAnimations.has(humanId)) return;
 		canvas.setPointerCapture(event.pointerId);
 		pointerWorld = canvasPoint(event);
 		if (!me) return;
@@ -1115,7 +1124,7 @@
 				startTutorial();
 			} else if (event.code === 'KeyA') {
 				event.preventDefault();
-				startArena();
+				startSoloArena();
 			}
 			return;
 		}
@@ -1252,7 +1261,8 @@
 					: null,
 			aim: playing && isAiming ? { target: pointerWorld, power, damage } : null,
 			chainPreview: playing ? chainPreview() : null,
-			spectating: !playing
+			spectating: !playing,
+			parryKeys: useTouchControls ? ['TAP PARRY'] : ['RMB', 'SPACE']
 		});
 	}
 
@@ -1272,7 +1282,7 @@
 		if (import.meta.env.DEV || import.meta.env.VITE_E2E === 'true') {
 			const params = new URLSearchParams(window.location.search);
 			if (params.has('respawn-demo')) startRespawnPreview();
-			else if (params.has('short-round')) startArena(4_000);
+			else if (params.has('short-round')) startSoloArena(4_000);
 		}
 		let frame = 0;
 		let last = performance.now();
@@ -1482,7 +1492,7 @@
 							<button class="btn" onclick={startTutorial}>
 								PLAY TUTORIAL {@render keycap('T')}
 							</button>
-							<button class="btn" onclick={() => startArena()}>
+							<button class="btn" onclick={() => startSoloArena()}>
 								SOLO ARENA {@render keycap('A')}
 							</button>
 						</div>
@@ -1590,8 +1600,11 @@
 					>{/if}
 				{#if tutorialStep === TUTORIAL_STEPS.length - 1}<button
 						class="btn primary"
-						onclick={() => startArena()}>ENTER LIVE ARENA →</button
-					>{/if}
+						disabled={lobbyStatus === 'connecting'}
+						onclick={joinOnlineArena}
+						>{lobbyStatus === 'connecting' ? 'ENTERING ARENA…' : 'ENTER LIVE ARENA →'}</button
+					>
+					{#if lobbyError}<p class="error" role="alert">{lobbyError}</p>{/if}{/if}
 			</section>
 		{/if}
 
@@ -1743,7 +1756,7 @@
 			<div class="hint-strip" aria-hidden="true">
 				<span>{@render keycap('LMB')} drag hero · Charge</span>
 				<span>{@render keycap('RMB')} hold · Aim</span>
-				<span>{@render keycap('SPACE')} Parry</span>
+				<span>{@render keycap('SPACE')} / {@render keycap('RMB')} on warning · Parry</span>
 				<span>{@render keycap('?')} Controls</span>
 			</div>
 		{/if}
@@ -1792,7 +1805,7 @@
 								<dt>Drag back</dt>
 								<dd>Shorten the route</dd>
 								<dt>{@render keycap('RMB')} hold</dt>
-								<dd>Aim and scout</dd>
+								<dd>Aim and scout. Parries instead while a warning ring is up</dd>
 								<dt>Release aim</dt>
 								<dd>Fire every point of Power</dd>
 								<dt>{@render keycap('SPACE')}</dt>
@@ -1858,11 +1871,13 @@
 				<div class="overlay-card panel wide">
 					<div class="eyebrow">ROUND COMPLETE</div>
 					<h2 id="results-title">
-						{leaderboard[0]?.id === humanId
-							? 'CAVERN CONQUERED'
-							: `${leaderboard[0]?.name ?? 'A RIVAL'} WINS`}
+						{standings.length === 1
+							? `FINAL SCORE ${score}`
+							: leaderboard[0]?.id === humanId
+								? 'CAVERN CONQUERED'
+								: `${leaderboard[0]?.name ?? 'A RIVAL'} WINS`}
 					</h2>
-					{#if myRank}<p class="placement">
+					{#if myRank && standings.length > 1}<p class="placement">
 							You placed <strong>#{myRank}</strong> of {standings.length}
 						</p>{/if}
 					<table class="standings">
@@ -1893,7 +1908,7 @@
 						{:else if lobbyRole === 'guest'}
 							<p>Waiting for the host to launch a rematch…</p>
 						{:else}
-							<button class="btn primary" onclick={() => startArena()}>PLAY AGAIN ↻</button>
+							<button class="btn primary" onclick={() => startSoloArena()}>PLAY AGAIN ↻</button>
 						{/if}
 						{#if lobbyRole}<button class="btn ghost" onclick={leaveRoom}>LEAVE ROOM</button
 							>{:else}<button class="btn ghost" onclick={exitToTitle}>MAIN MENU</button>{/if}

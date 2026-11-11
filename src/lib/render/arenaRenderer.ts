@@ -45,6 +45,8 @@ export interface Scene {
 	chainPreview: { text: string; color: string } | null;
 	/** When true, draws no local-player affordances (title-screen attract mode). */
 	spectating: boolean;
+	/** Keycaps that parry, shown pressing beside the hero when a parry would land. */
+	parryKeys: readonly string[];
 }
 
 export const PALETTE = {
@@ -134,6 +136,31 @@ function approach(target: Point, position: Point, velocity: Point) {
 	const seconds = (rx * velocity.x + ry * velocity.y) / speedSquared;
 	const miss = Math.hypot(rx - velocity.x * seconds, ry - velocity.y * seconds);
 	return { seconds, miss };
+}
+
+/** The most imminent strike or shot headed for a player: what the warning ring shows. */
+export function incomingThreat(
+	game: GameState,
+	playerId: string
+): { seconds: number; position: Point } | null {
+	const me = game.players[playerId];
+	if (!me || me.mode === 'dead') return null;
+	let soonest: { seconds: number; position: Point } | null = null;
+	for (const strike of Object.values(game.chainStrikes)) {
+		if (strike.targetId !== me.id || strike.cellId !== me.cellId) continue;
+		const seconds = (strike.hitAtMs - game.timeMs) / 1000;
+		const position = game.players[strike.ownerId]?.position;
+		if (position && seconds > 0 && (!soonest || seconds < soonest.seconds))
+			soonest = { seconds, position };
+	}
+	for (const projectile of Object.values(game.projectiles)) {
+		if (projectile.ownerId === me.id) continue;
+		const { seconds, miss } = approach(me.position, projectile.position, projectile.velocity);
+		if (seconds <= 0 || seconds > 1.4) continue;
+		if (miss > game.config.playerRadius + projectile.radius + 12) continue;
+		if (!soonest || seconds < soonest.seconds) soonest = { seconds, position: projectile.position };
+	}
+	return soonest;
 }
 
 export class ArenaRenderer {
@@ -785,24 +812,8 @@ export class ArenaRenderer {
 	/** Warns the local player about the most imminent incoming projectile. */
 	private drawThreat(context: CanvasRenderingContext2D, scene: Scene) {
 		const me = scene.game.players[scene.humanId];
-		if (!me || me.mode === 'dead') return null;
-		let soonest: { seconds: number; position: Point } | null = null;
-		for (const strike of Object.values(scene.game.chainStrikes)) {
-			if (strike.targetId !== me.id || strike.cellId !== me.cellId) continue;
-			const seconds = (strike.hitAtMs - scene.game.timeMs) / 1000;
-			const position = scene.game.players[strike.ownerId]?.position;
-			if (position && seconds > 0 && (!soonest || seconds < soonest.seconds))
-				soonest = { seconds, position };
-		}
-		for (const projectile of Object.values(scene.game.projectiles)) {
-			if (projectile.ownerId === me.id) continue;
-			const { seconds, miss } = approach(me.position, projectile.position, projectile.velocity);
-			if (seconds <= 0 || seconds > 1.4) continue;
-			if (miss > scene.game.config.playerRadius + projectile.radius + 12) continue;
-			if (!soonest || seconds < soonest.seconds)
-				soonest = { seconds, position: projectile.position };
-		}
-		if (!soonest) return null;
+		const soonest = incomingThreat(scene.game, scene.humanId);
+		if (!me || !soonest) return null;
 		const { x, y } = me.position;
 		const parryZone = soonest.seconds * 1000 <= scene.game.config.parryWindowMs + 120;
 		context.save();
@@ -821,18 +832,60 @@ export class ArenaRenderer {
 		context.arc(x, y, 34, 0, Math.PI * 2);
 		context.stroke();
 		context.restore();
-		if (parryZone) {
-			context.save();
-			context.font = '700 15px "Pixelify Sans", monospace';
-			context.textAlign = 'center';
-			context.lineWidth = 4;
-			context.strokeStyle = PALETTE.ink;
-			context.strokeText('PARRY!', x, y + 54);
-			context.fillStyle = PALETTE.energy;
-			context.fillText('PARRY!', x, y + 54);
-			context.restore();
-		}
+		if (parryZone) this.drawParryPrompt(context, scene, x, y + 58);
 		return soonest;
+	}
+
+	/** Keycaps that press down in a loop, like a console button prompt, then "PARRY!". */
+	private drawParryPrompt(
+		context: CanvasRenderingContext2D,
+		scene: Scene,
+		centerX: number,
+		y: number
+	) {
+		const pressed = scene.now % 240 < 100;
+		context.save();
+		context.font = '700 13px "Pixelify Sans", monospace';
+		context.textAlign = 'center';
+		context.textBaseline = 'middle';
+		const caps = scene.parryKeys.map((key) => ({
+			key,
+			width: context.measureText(key).width + 16
+		}));
+		const label = 'PARRY!';
+		const gap = 8;
+		context.font = '700 15px "Pixelify Sans", monospace';
+		const labelWidth = context.measureText(label).width;
+		const total = caps.reduce((sum, cap) => sum + cap.width + gap, 0) + labelWidth;
+		let left = centerX - total / 2;
+		const height = 22,
+			depth = 4,
+			sink = pressed ? depth - 1 : 0;
+		for (const cap of caps) {
+			context.fillStyle = '#2a8a96';
+			context.beginPath();
+			context.roundRect(left, y - height / 2 + depth, cap.width, height, 5);
+			context.fill();
+			context.fillStyle = pressed ? '#c8fbff' : PALETTE.energy;
+			context.strokeStyle = PALETTE.ink;
+			context.lineWidth = 2;
+			context.beginPath();
+			context.roundRect(left, y - height / 2 + sink, cap.width, height, 5);
+			context.fill();
+			context.stroke();
+			context.font = '700 13px "Pixelify Sans", monospace';
+			context.fillStyle = PALETTE.ink;
+			context.fillText(cap.key, left + cap.width / 2, y + sink + 1);
+			left += cap.width + gap;
+		}
+		context.font = '700 15px "Pixelify Sans", monospace';
+		context.textAlign = 'left';
+		context.lineWidth = 4;
+		context.strokeStyle = PALETTE.ink;
+		context.strokeText(label, left, y + 2);
+		context.fillStyle = PALETTE.energy;
+		context.fillText(label, left, y + 2);
+		context.restore();
 	}
 
 	private drawOffscreenThreat(
