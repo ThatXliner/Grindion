@@ -335,7 +335,8 @@
 			previousDummyCell.alive = true;
 			previousDummyCell.respawnAtMs = 0;
 		}
-		const dummyCell = state.arena.monsters.m116!;
+		// Far enough that its shot gives a human time to react to the warning ring.
+		const dummyCell = state.arena.monsters.m119!;
 		dummy.cellId = dummyCell.id;
 		dummy.position = { ...dummyCell.position };
 		dummyCell.alive = false;
@@ -1332,6 +1333,8 @@
 						const dummy = game.players.dummy!;
 						const human = game.players.human!;
 						dummy.power = 18;
+						// Missed parries spend Power the lesson never earns back.
+						human.power = Math.max(human.power, game.config.initialPower);
 						intents.push({
 							type: 'fire',
 							playerId: 'dummy',
